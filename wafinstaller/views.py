@@ -13,7 +13,7 @@ from celery.result import AsyncResult
 from django.contrib import messages
 from django.contrib.auth import get_user_model, login, update_session_auth_hash
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.contrib.auth.views import LoginView, LogoutView as DjangoLogoutView
 from django.db import models
 from django.db.models import Q, Count
@@ -37,7 +37,10 @@ from wafinstaller.helper.crs import (
     load_app_settings,
     save_app_settings,
 )
-from .forms import AdminLogin, AdminPasswordForm, AdminProfileForm
+from .forms import (
+    AdminLogin, AdminPasswordForm, AdminProfileForm,
+    UserCreateForm, UserEditForm, UserSetPasswordForm,
+)
 from wafinstaller.helper.helpers import (
     get_installed_crs_version,
     get_latest_crs_version,
@@ -50,6 +53,7 @@ from .models import Attack, CrsVersion, DashboardStat, UserProfile
 from .tasks import fetch_crs_versions_task, run_waf_install
 from wafinstaller.helper.utils import get_crs_full_version, get_rules_dir
 from wafinstaller.helper.server_conf import ServerConfError, get_conf_manager
+from wafinstaller.helper.users import UserManagementError, UserManagementService
 
 User = get_user_model()
 
@@ -1337,3 +1341,104 @@ class ServerConfSaveView(ServerConfMixin, View):
             return JsonResponse({"success": True, "message": message})
         except (ServerConfError, OSError, ValueError) as e:
             return JsonResponse({"success": False, "error": str(e)})
+
+
+# -------------------------
+# Users management
+# -------------------------
+
+class SuperuserRequiredMixin(LoginRequiredMixin, UserPassesTestMixin):
+    login_url = "wafinstaller:login"
+
+    def test_func(self):
+        return self.request.user.is_superuser
+
+
+class UserListView(SuperuserRequiredMixin, View):
+    template_name = "dashboard/panel/users_list.html"
+
+    def get(self, request):
+        return render(request, self.template_name, {
+            "users": UserManagementService.list_users(),
+        })
+
+
+class UserCreateView(SuperuserRequiredMixin, View):
+    template_name = "dashboard/panel/user_form.html"
+
+    def get(self, request):
+        return render(request, self.template_name, {"form": UserCreateForm(), "is_new": True})
+
+    def post(self, request):
+        form = UserCreateForm(request.POST)
+        if form.is_valid():
+            user = UserManagementService(request.user).create(form)
+            messages.success(request, f"User '{user.username}' created.")
+            return redirect("wafinstaller:users")
+        return render(request, self.template_name, {"form": form, "is_new": True})
+
+
+class UserEditView(SuperuserRequiredMixin, View):
+    """Edit details, set a new password, or reset 2FA for one user."""
+    template_name = "dashboard/panel/user_form.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        self.target = UserManagementService.get_user(kwargs.get("user_id"))
+        if self.target is None and request.user.is_authenticated:
+            raise Http404("User not found")
+        return super().dispatch(request, *args, **kwargs)
+
+    def _render(self, request, form=None, password_form=None):
+        return render(request, self.template_name, {
+            "is_new": False,
+            "target": self.target,
+            "form": form or UserEditForm(instance=self.target),
+            "password_form": password_form or UserSetPasswordForm(user=self.target),
+            "two_factor": UserManagementService.two_factor_enabled(self.target),
+        })
+
+    def get(self, request, user_id):
+        return self._render(request)
+
+    def post(self, request, user_id):
+        service = UserManagementService(request.user)
+        target = self.target
+
+        if "update_user" in request.POST:
+            form = UserEditForm(request.POST, instance=target)
+            if not form.is_valid():
+                return self._render(request, form=form)
+            try:
+                service.update(target, form)
+                messages.success(request, "User updated.")
+            except UserManagementError as e:
+                messages.error(request, str(e))
+
+        elif "set_password" in request.POST:
+            password_form = UserSetPasswordForm(user=target, data=request.POST)
+            if not password_form.is_valid():
+                return self._render(request, password_form=password_form)
+            user = service.set_password(password_form)
+            if user.pk == request.user.pk:
+                update_session_auth_hash(request, user)
+            messages.success(request, "Password updated.")
+
+        elif "reset_2fa" in request.POST:
+            service.reset_two_factor(target)
+            messages.success(request, "Two-factor authentication reset.")
+
+        return redirect("wafinstaller:user_edit", user_id=target.pk)
+
+
+class UserDeleteView(SuperuserRequiredMixin, View):
+
+    def post(self, request, user_id):
+        target = UserManagementService.get_user(user_id)
+        if target is None:
+            raise Http404("User not found")
+        try:
+            username = UserManagementService(request.user).delete(target)
+            messages.success(request, f"User '{username}' deleted.")
+        except UserManagementError as e:
+            messages.error(request, str(e))
+        return redirect("wafinstaller:users")

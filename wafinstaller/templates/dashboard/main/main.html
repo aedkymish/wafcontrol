@@ -172,6 +172,13 @@
                         </a>
                     </li>
 
+                    <!-- Users Management -->
+                    <li class="{% if request.resolver_match.url_name in 'users user_add user_edit' %}active{% endif %}">
+                        <a href="{% url 'wafinstaller:users' %}" class="iq-waves-effect">
+                            <i class="las la-users iq-arrow-left"></i><span>Users Management</span>
+                        </a>
+                    </li>
+
                     <!-- Admin Setting -->
                     <li class="{% if request.resolver_match.url_name == 'admin_profile' %}active{% endif %}">
                         <a href="{% url 'wafinstaller:admin_profile' %}" class="iq-waves-effect">

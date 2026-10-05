@@ -9,7 +9,8 @@ from wafinstaller.views import (
     ModSecuritySettingsView, CustomRulesView, AddCustomRuleView, DeleteCustomRuleView,
     EditCustomRuleView, AppSettingsView, AdminProfileView, Verify2FAView,
     CustomLogoutView, HomeRedirectView, CrsUpdateSyncView, ForceFetchCrsVersionsView,
-    ServerConfListView, ServerConfReadView, ServerConfSaveView
+    ServerConfListView, ServerConfReadView, ServerConfSaveView,
+    UserListView, UserCreateView, UserEditView, UserDeleteView
 )
 
 app_name = 'wafinstaller'
@@ -61,6 +62,12 @@ urlpatterns = [
     path('dashboard/<str:server>/conf/', ServerConfListView.as_view(), name='server_conf'),
     path('<str:server>/conf/view/<str:filename>/', ServerConfReadView.as_view(), name='server_conf_view'),
     path('<str:server>/conf/save/<str:filename>/', ServerConfSaveView.as_view(), name='server_conf_save'),
+
+    # Users management
+    path('dashboard/users/', UserListView.as_view(), name='users'),
+    path('dashboard/users/add/', UserCreateView.as_view(), name='user_add'),
+    path('dashboard/users/<int:user_id>/', UserEditView.as_view(), name='user_edit'),
+    path('dashboard/users/<int:user_id>/delete/', UserDeleteView.as_view(), name='user_delete'),
 
     # App config + Admin profile
     path("dashboard/settings/", AppSettingsView.as_view(), name="app_settings"),
