@@ -146,8 +146,19 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
     ACCESS_LOGS = [p for p in ACCESS_CANDIDATES if os.path.exists(p)]
 
     created = 0
+    failed = 0
     ckpt = load_ckpt()
     capture = RequestCaptureSettings.load()
+
+    if not _attack_schema_ready():
+        # Keep the checkpoint where it is: once `migrate` is run, these attacks are picked up.
+        logger.error("Attack tables are out of date: run 'python manage.py makemigrations wafinstaller "
+                     "&& python manage.py migrate', then restart Celery. Attacks are not being stored.")
+        try:
+            os.remove(LOCK_FILE)
+        except OSError:
+            pass
+        return "migration required"
 
     try:
         blocks = []
@@ -213,6 +224,7 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
             host = mod.extract_host(blk) or ""
             # One AttackRequest per transaction, created only if at least one Attack row is stored.
             request_obj = None
+            request_failed = False
             full_uri = uri
             if ip in ip_targets:
                 cand = mod.pick_best_target(ip, uri, ip_targets[ip])
@@ -235,38 +247,79 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
                     country_info = get_country_info(ip) or {}
                     geo_cache[ip] = country_info
 
-                try:
-                    if request_obj is None:
+                if request_obj is None and not request_failed:
+                    # Request details are best effort: a failure here must never drop the attack itself.
+                    try:
                         request_obj = capture.create_request(sections, uid or uid_a)
+                    except Exception as e:
+                        request_failed = True
+                        logger.warning("%s: could not store request details (%s); storing attack without them.",
+                                       backend, e)
+                try:
                     Attack.objects.create(
                         request=request_obj,
                         ip=ip,
                         country=country_info.get("country", "-"),
                         flag=country_info.get("iso_code", "-"),
-                        rule_id=rid or "",
-                        message=msg or "",
-                        uri=full_uri or "",
-                        referer=ref or "",
+                        rule_id=_no_nul(rid or ""),
+                        message=_no_nul(msg or ""),
+                        uri=_no_nul(full_uri or "")[:2048],
+                        referer=_no_nul(ref or "")[:2048],
                         status=status,
                         severity=severity,
                         anomaly_score=anomaly_score,
                         version=ver or "-",
-                        host=host or None,
+                        host=_no_nul(host)[:255] or None,
                     )
                     created += 1
                 except IntegrityError:
                     continue
-                except Exception:
+                except Exception as e:
+                    failed += 1
+                    if failed == 1:
+                        logger.exception("%s: failed to store attack: %s", backend, e)
                     continue
 
+        if failed:
+            logger.error("%s: %d attack(s) could not be stored (first error logged above).", backend, failed)
         save_ckpt(ckpt)
-        return f"{backend}: created={created}"
+        return f"{backend}: created={created}" + (f" failed={failed}" if failed else "")
 
     finally:
         try:
             os.remove(LOCK_FILE)
         except Exception:
             pass
+
+_SCHEMA_READY = False
+
+
+def _attack_schema_ready() -> bool:
+    """True once the attack tables have the columns this code writes (checked until it succeeds)."""
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return True
+    from django.db import connection
+    try:
+        tables = connection.introspection.table_names()
+        if AttackRequest._meta.db_table not in tables:
+            return False
+        with connection.cursor() as cursor:
+            columns = {c.name for c in connection.introspection.get_table_description(cursor, Attack._meta.db_table)}
+        _SCHEMA_READY = "request_id" in columns
+    except Exception:
+        return False
+    return _SCHEMA_READY
+
+
+def _no_nul(value):
+    """PostgreSQL rejects NUL (\\x00) in text and JSON; attack payloads often contain it."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {_no_nul(k): _no_nul(v) for k, v in value.items()}
+    return value
+
 
 class RequestCaptureSettings:
     """Which parts of the attacking request are stored (Owc Setting page)."""
@@ -292,13 +345,13 @@ class RequestCaptureSettings:
         if details.is_empty:
             return None  # e.g. error-log fallback: no request sections available
         return AttackRequest.objects.create(
-            unique_id=(unique_id or "")[:128],
-            method=details.method,
-            protocol=details.protocol,
-            user_agent=details.user_agent,
-            headers=details.headers,
-            cookies=details.cookies,
-            body=details.body,
+            unique_id=_no_nul(unique_id or "")[:128],
+            method=_no_nul(details.method)[:16],
+            protocol=_no_nul(details.protocol)[:16],
+            user_agent=_no_nul(details.user_agent)[:1024],
+            headers=_no_nul(details.headers),
+            cookies=_no_nul(details.cookies),
+            body=_no_nul(details.body),
             body_truncated=details.body_truncated,
         )
 

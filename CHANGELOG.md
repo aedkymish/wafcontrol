@@ -10,6 +10,12 @@
 - Owc Setting: `AttackStoreRequestBody`, `AttackStoreCookies`, `AttackMaxBodyBytes` (default: store both, 16 KB body).
 - Syslog attack events include the method and User-Agent (body and cookies are never forwarded).
 
+### Fixed
+- Attacks stopped being stored when saving the request details failed (e.g. a NUL byte in the body, rejected by
+  PostgreSQL, or a missing migration): the error was swallowed and the whole attack dropped. Request details are now
+  best effort, NUL bytes are stripped, store errors are logged, and when the tables are out of date the task logs
+  that a migration is required and keeps its checkpoint so the attacks are stored once `migrate` is run.
+
 ### Security
 - Fixed stored XSS on the attacks pages: the attacker-controlled URI was placed inside a JavaScript template literal
   in the "Copy" buttons.
