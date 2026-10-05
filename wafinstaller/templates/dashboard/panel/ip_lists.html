@@ -11,18 +11,35 @@
 
             {% if missing_table %}
                 <div class="alert alert-warning d-block">
-                    <strong>Database update required.</strong> The IP Lists table does not exist yet.
+                    <strong>Database update required.</strong> The IP Lists table is missing or out of date.
                     Run the following in the WafControl directory (with its virtualenv active), then restart the panel:
                     <pre class="bg-dark text-white p-2 rounded mt-2 mb-0">python manage.py makemigrations wafinstaller
 python manage.py migrate</pre>
                 </div>
             {% else %}
+            {% if geo_available and not geo_ready %}
+                <div class="alert alert-info">Preparing the GeoIP country index in the background (about 30 seconds,
+                    once per GeoIP database version). Geo lists can be created when it is ready &mdash; refresh this page.</div>
+            {% elif not geo_available %}
+                <div class="alert alert-warning">GeoIP database not found (<code>geo/GeoLite2-Country.mmdb</code>):
+                    geo lists are unavailable.</div>
+            {% endif %}
             <div class="row">
                 <div class="col-lg-12">
                     <div class="iq-card">
                         <div class="iq-card-header d-flex justify-content-between">
                             <div class="iq-header-title"><h4 class="card-title">IP Lists</h4></div>
-                            <a href="{% url 'wafinstaller:ip_list_add' %}" class="btn btn-sm btn-success align-self-center">+ New IP List</a>
+                            <div class="align-self-center">
+                                {% if has_geo_lists %}
+                                    <form method="post" action="{% url 'wafinstaller:ip_lists_refresh_geo' %}" class="d-inline"
+                                          title="Re-generate geo lists after the GeoIP database was updated">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary">Refresh Geo Lists</button>
+                                    </form>
+                                {% endif %}
+                                <a href="{% url 'wafinstaller:ip_list_add' %}?kind=ip" class="btn btn-sm btn-success">+ New IP List</a>
+                                <a href="{% url 'wafinstaller:ip_list_add' %}?kind=geo" class="btn btn-sm btn-info">+ New Geo List</a>
+                            </div>
                         </div>
                         <div class="iq-card-body">
                             <div class="table-responsive">
@@ -31,7 +48,8 @@ python manage.py migrate</pre>
                                     <tr>
                                         <th>Name</th>
                                         <th>Type</th>
-                                        <th>Entries</th>
+                                        <th>Action</th>
+                                        <th>Contents</th>
                                         <th>Description</th>
                                         <th>Updated</th>
                                         <th>Actions</th>
@@ -41,24 +59,32 @@ python manage.py migrate</pre>
                                     {% for l in ip_lists %}
                                         <tr>
                                             <td><code>{{ l.name }}</code></td>
+                                            <td>{% if l.is_geo %}<span class="badge badge-info">Geo</span>{% else %}<span class="badge badge-light">IP</span>{% endif %}</td>
                                             <td>
                                                 {% if l.is_allow %}<span class="badge badge-success">Allow</span>
                                                 {% else %}<span class="badge badge-danger">Deny</span>{% endif %}
                                             </td>
-                                            <td>{{ l.entry_count }}</td>
+                                            <td>
+                                                {% if l.is_geo %}
+                                                    {% for c in l.country_list %}<span class="badge badge-secondary mr-1">{{ c }}</span>{% endfor %}
+                                                    {% if l.entry_count %}<small class="text-muted">+ {{ l.entry_count }} IP</small>{% endif %}
+                                                {% else %}
+                                                    {{ l.entry_count }} IP
+                                                {% endif %}
+                                            </td>
                                             <td>{{ l.description|default:"-" }}</td>
                                             <td>{{ l.updated_at|date:"Y-m-d H:i" }}</td>
                                             <td class="text-nowrap">
                                                 <a href="{% url 'wafinstaller:ip_list_edit' l.pk %}" class="btn btn-sm btn-primary">Edit / Usage</a>
                                                 <form method="post" action="{% url 'wafinstaller:ip_list_delete' l.pk %}" class="d-inline"
-                                                      onsubmit="return confirm('Delete IP list {{ l.name|escapejs }}? Remove its include line from server configs first.');">
+                                                      onsubmit="return confirm('Delete list {{ l.name|escapejs }}? Remove it from server configs first.');">
                                                     {% csrf_token %}
                                                     <button type="submit" class="btn btn-sm btn-danger">Delete</button>
                                                 </form>
                                             </td>
                                         </tr>
                                     {% empty %}
-                                        <tr><td colspan="6" class="text-center text-muted">No IP lists yet.</td></tr>
+                                        <tr><td colspan="7" class="text-center text-muted">No lists yet.</td></tr>
                                     {% endfor %}
                                     </tbody>
                                 </table>
@@ -70,17 +96,21 @@ python manage.py migrate</pre>
                 <div class="col-lg-12">
                     <div class="iq-card">
                         <div class="iq-card-header">
-                            <div class="iq-header-title"><h4 class="card-title">How to use an IP list</h4></div>
+                            <div class="iq-header-title"><h4 class="card-title">How to use a list</h4></div>
                         </div>
                         <div class="iq-card-body">
                             <ol class="small">
-                                <li>Create a list and choose its type: <strong>Allow</strong> (only these IPs may access)
-                                    or <strong>Deny</strong> (block these IPs).</li>
-                                <li>WafControl writes it as an include file for every installed web server and reloads it.</li>
-                                <li>Add the include line once to the site config where you want it applied (examples below).
-                                    Later edits of the list apply automatically &mdash; no need to touch the site config again.</li>
+                                <li>Create a list: an <strong>IP list</strong> (addresses / CIDR ranges) or a
+                                    <strong>Geo list</strong> (countries, from the bundled GeoLite2 database), and choose
+                                    <strong>Allow</strong> (only these may access) or <strong>Deny</strong> (block these).</li>
+                                <li>WafControl generates the files for every installed web server, tests the config and reloads it.</li>
+                                <li>Add the line once to the site config where it should apply (examples below and on each
+                                    list's page). Later edits of the list apply automatically.</li>
                             </ol>
-                            {% include 'dashboard/panel/_ip_list_guide.html' with servers=servers action='' %}
+                            <h5 class="mt-3">IP lists</h5>
+                            {% include 'dashboard/panel/_ip_list_guide.html' with servers=servers action='' kind='ip' tabs='ip' %}
+                            <h5 class="mt-4">Geo lists</h5>
+                            {% include 'dashboard/panel/_ip_list_guide.html' with servers=servers action='' kind='geo' tabs='geo' %}
                         </div>
                     </div>
                 </div>

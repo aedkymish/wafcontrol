@@ -55,6 +55,7 @@ from .tasks import fetch_crs_versions_task, run_waf_install
 from wafinstaller.helper.utils import get_crs_full_version, get_rules_dir
 from wafinstaller.helper.server_conf import ServerConfError, get_conf_manager
 from wafinstaller.helper.users import UserManagementError, UserManagementService
+from wafinstaller.helper.geo_index import GeoIndex
 from wafinstaller.helper.ip_lists import WRITERS, IpListError, IpListService
 from wafinstaller.helper.syslog import WARNING, SyslogConfig, SyslogService, client_ip
 
@@ -1498,6 +1499,8 @@ class SyslogConfigView(SuperuserRequiredMixin, View):
 
 class IpListMixin(SuperuserRequiredMixin):
 
+    REQUIRED_COLUMNS = {"kind", "countries"}
+
     def dispatch(self, request, *args, **kwargs):
         if request.user.is_authenticated and not self.table_ready():
             return render(request, "dashboard/panel/ip_lists.html", {
@@ -1505,24 +1508,39 @@ class IpListMixin(SuperuserRequiredMixin):
             })
         return super().dispatch(request, *args, **kwargs)
 
-    @staticmethod
-    def table_ready():
-        """IpList is a newer model: its table exists only after `migrate` was run on update."""
+    @classmethod
+    def table_ready(cls):
+        """IpList is a newer model: its table/columns exist only after `migrate` was run on update."""
         from django.db import connection
         try:
-            return IpList._meta.db_table in connection.introspection.table_names()
+            table = IpList._meta.db_table
+            if table not in connection.introspection.table_names():
+                return False
+            with connection.cursor() as cursor:
+                columns = {c.name for c in connection.introspection.get_table_description(cursor, table)}
+            return cls.REQUIRED_COLUMNS <= columns
         except Exception:
             return False
 
     @staticmethod
     def server_paths(ip_list=None):
-        """[(key, label, include path, installed)] for the usage guide."""
+        """Per web server: label, install state and the file / variable a site config references."""
         name = ip_list.name if ip_list else "<name>"
+        variable = ip_list.nginx_variable if ip_list else "wafc_geo_<name>"
         return [
             {"key": w.key, "label": w.label, "installed": w.is_available(),
-             "path": os.path.join(w.base_dir(), f"{name}.conf")}
+             "path": os.path.join(w.base_dir(), f"{name}.conf"), "variable": variable}
             for w in WRITERS
         ]
+
+    @staticmethod
+    def form_kwargs():
+        GeoIndex.ensure_async()
+        return {"country_names": GeoIndex.country_names()}
+
+    @staticmethod
+    def geo_state():
+        return {"geo_available": GeoIndex.available(), "geo_ready": GeoIndex.is_ready()}
 
     def _save(self, request, form):
         """Save the list and publish its include files atomically. Returns the list or None."""
@@ -1541,25 +1559,32 @@ class IpListListView(IpListMixin, View):
     template_name = "dashboard/panel/ip_lists.html"
 
     def get(self, request):
+        GeoIndex.ensure_async()
         return render(request, self.template_name, {
             "ip_lists": IpList.objects.all(),
+            "has_geo_lists": IpList.objects.filter(kind=IpList.KIND_GEO).exists(),
             "servers": self.server_paths(),
+            **self.geo_state(),
         })
 
 
 class IpListCreateView(IpListMixin, View):
     template_name = "dashboard/panel/ip_list_form.html"
 
+    def _render(self, request, form):
+        return render(request, self.template_name, {"form": form, "is_new": True, **self.geo_state()})
+
     def get(self, request):
-        return render(request, self.template_name, {"form": IpListForm(), "is_new": True})
+        initial = {"kind": request.GET.get("kind", IpList.KIND_IP)}
+        return self._render(request, IpListForm(initial=initial, **self.form_kwargs()))
 
     def post(self, request):
-        form = IpListForm(request.POST)
+        form = IpListForm(request.POST, **self.form_kwargs())
         if form.is_valid():
             ip_list = self._save(request, form)
             if ip_list:
                 return redirect("wafinstaller:ip_list_edit", list_id=ip_list.pk)
-        return render(request, self.template_name, {"form": form, "is_new": True})
+        return self._render(request, form)
 
 
 class IpListEditView(IpListMixin, View):
@@ -1577,14 +1602,14 @@ class IpListEditView(IpListMixin, View):
         ip_list = IpList.objects.get(pk=self.ip_list.pk)
         return render(request, self.template_name, {
             "form": form, "is_new": False, "ip_list": ip_list,
-            "servers": self.server_paths(ip_list),
+            "servers": self.server_paths(ip_list), **self.geo_state(),
         })
 
     def get(self, request, list_id):
-        return self._render(request, IpListForm(instance=self.ip_list))
+        return self._render(request, IpListForm(instance=self.ip_list, **self.form_kwargs()))
 
     def post(self, request, list_id):
-        form = IpListForm(request.POST, instance=self.ip_list)
+        form = IpListForm(request.POST, instance=self.ip_list, **self.form_kwargs())
         if form.is_valid() and self._save(request, form):
             return redirect("wafinstaller:ip_list_edit", list_id=list_id)
         return self._render(request, form)
@@ -1599,10 +1624,24 @@ class IpListDeleteView(IpListMixin, View):
         try:
             IpListService().remove(ip_list)
         except IpListError as e:
-            messages.error(request, f"Cannot delete '{ip_list.name}': it is probably still included "
-                                    f"by a server config. Remove the include line first.\n{e}")
+            messages.error(request, f"Cannot delete '{ip_list.name}': it is probably still used "
+                                    f"by a server config. Remove the include / if line first.\n{e}")
             return redirect("wafinstaller:ip_lists")
         name = ip_list.name
         ip_list.delete()
         messages.success(request, f"IP list '{name}' deleted.")
+        return redirect("wafinstaller:ip_lists")
+
+
+class IpListRefreshGeoView(IpListMixin, View):
+    """Re-generate every geo list, e.g. after the GeoIP database was updated."""
+
+    def post(self, request):
+        done, failed = IpListService().refresh_geo(IpList.objects.filter(kind=IpList.KIND_GEO))
+        if done:
+            messages.success(request, f"Geo lists refreshed: {', '.join(done)}.")
+        for error in failed:
+            messages.error(request, error)
+        if not done and not failed:
+            messages.info(request, "There are no geo lists to refresh.")
         return redirect("wafinstaller:ip_lists")

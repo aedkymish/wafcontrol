@@ -11,7 +11,8 @@ from wafinstaller.views import (
     CustomLogoutView, HomeRedirectView, CrsUpdateSyncView, ForceFetchCrsVersionsView,
     ServerConfListView, ServerConfReadView, ServerConfSaveView,
     UserListView, UserCreateView, UserEditView, UserDeleteView,
-    SyslogConfigView, IpListListView, IpListCreateView, IpListEditView, IpListDeleteView
+    SyslogConfigView, IpListListView, IpListCreateView, IpListEditView, IpListDeleteView,
+    IpListRefreshGeoView
 )
 
 app_name = 'wafinstaller'
@@ -74,6 +75,7 @@ urlpatterns = [
     path('dashboard/ip-lists/', IpListListView.as_view(), name='ip_lists'),
     path('dashboard/ip-lists/add/', IpListCreateView.as_view(), name='ip_list_add'),
     path('dashboard/ip-lists/<int:list_id>/', IpListEditView.as_view(), name='ip_list_edit'),
+    path('dashboard/ip-lists/refresh-geo/', IpListRefreshGeoView.as_view(), name='ip_lists_refresh_geo'),
     path('dashboard/ip-lists/<int:list_id>/delete/', IpListDeleteView.as_view(), name='ip_list_delete'),
 
     # Syslog

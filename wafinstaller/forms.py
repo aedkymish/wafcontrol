@@ -124,27 +124,35 @@ class SyslogConfigForm(_BootstrapFormMixin, forms.Form):
 class IpListForm(_BootstrapFormMixin, forms.ModelForm):
     class Meta:
         model = IpList
-        fields = ["name", "action", "description", "entries"]
+        fields = ["name", "kind", "action", "description", "countries", "entries"]
         widgets = {
             "entries": forms.Textarea(attrs={
-                "rows": 14, "spellcheck": "false", "style": "font-family: monospace;",
+                "rows": 10, "spellcheck": "false", "style": "font-family: monospace;",
                 "placeholder": "192.168.1.10\n10.0.0.0/8      # office VPN\n2001:db8::/32",
             }),
         }
+        labels = {"kind": "List type", "entries": "IP addresses / CIDR ranges"}
         help_texts = {
             "name": "Used as the include file name. Lowercase letters, digits, '-' and '_'.",
         }
 
     name = forms.CharField(max_length=64, validators=[RegexValidator(
         r"^[a-z0-9][a-z0-9_-]{0,63}$", "Use lowercase letters, digits, '-' or '_'.")])
+    countries = forms.MultipleChoiceField(required=False, widget=forms.CheckboxSelectMultiple)
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, country_names=None, **kwargs):
         super().__init__(*args, **kwargs)
+        names = country_names or {}
+        self.fields["countries"].choices = sorted(names.items(), key=lambda kv: kv[1])
+        self.geo_available = bool(names)
         if self.instance.pk:
-            # The name is the file path referenced by server configs: keep it stable.
-            self.fields["name"].disabled = True
+            self.initial["countries"] = self.instance.country_list
+            # Name and type define the files server configs include: keep them stable.
+            for field in ("name", "kind"):
+                self.fields[field].disabled = True
             self.fields["name"].help_text = "The name cannot be changed: server configs include this file."
         self._apply_bootstrap()
+        self.fields["countries"].widget.attrs["class"] = "form-check-input"
 
     def clean_entries(self):
         from wafinstaller.helper.ip_lists import normalize_entries, parse_entries
@@ -152,3 +160,23 @@ class IpListForm(_BootstrapFormMixin, forms.ModelForm):
         if errors:
             raise forms.ValidationError(errors)
         return normalize_entries(entries)
+
+    def clean_countries(self):
+        return ",".join(sorted(set(self.cleaned_data.get("countries") or [])))
+
+    def clean(self):
+        data = super().clean()
+        if data.get("kind") == IpList.KIND_GEO:
+            if not self.geo_available:
+                raise forms.ValidationError("The GeoIP country index is not ready yet. Try again in a minute.")
+            if not data.get("countries"):
+                self.add_error("countries", "Select at least one country.")
+            name = data.get("name") or ""
+            # '-' and '_' map to the same nginx variable name.
+            twin = IpList.objects.filter(kind=IpList.KIND_GEO, name=name.replace("-", "_")) \
+                | IpList.objects.filter(kind=IpList.KIND_GEO, name=name.replace("_", "-"))
+            if name and twin.exclude(pk=self.instance.pk).exclude(name=name).exists():
+                self.add_error("name", "A geo list with the same name (differing only by '-'/'_') exists.")
+        else:
+            data["countries"] = ""
+        return data

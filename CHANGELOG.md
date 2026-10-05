@@ -13,12 +13,15 @@
   Passwords, OTP codes and file contents are never sent.
 - **IP Lists**: named allow/deny lists of IPv4/IPv6 addresses and CIDR ranges, published as include files for nginx
   (`/etc/nginx/wafcontrol/iplists/`) and Apache (`/etc/apache2/wafcontrol/iplists/`), with a usage guide for each server.
+- **Geo Lists**: allow/deny lists by country (plus optional extra IPs), built from the bundled GeoLite2-Country database.
+  nginx uses its built-in `geo` module (`$wafc_geo_<name>` variable, fast even for large countries); Apache gets the
+  countries expanded into `Require ip` ranges. A "Refresh Geo Lists" button re-generates them after a GeoIP update.
 
 ### Fixed
 - App signals were never connected (`WafinstallerConfig.ready()` was defined outside the class).
 
 ### Upgrade notes
-A new database table is required (IP Lists). After updating the code:
+A database update is required (IP Lists / Geo Lists). After updating the code:
 
 ```bash
 python manage.py makemigrations wafinstaller

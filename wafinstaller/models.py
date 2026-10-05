@@ -66,9 +66,15 @@ class IpList(models.Model):
     ACTION_ALLOW = "allow"
     ACTION_DENY = "deny"
     ACTION_CHOICES = [(ACTION_ALLOW, "Allow"), (ACTION_DENY, "Deny")]
+    KIND_IP = "ip"
+    KIND_GEO = "geo"
+    KIND_CHOICES = [(KIND_IP, "IP list"), (KIND_GEO, "Geo list (countries)")]
 
     name = models.CharField(max_length=64, unique=True)
+    kind = models.CharField(max_length=3, choices=KIND_CHOICES, default=KIND_IP)
     action = models.CharField(max_length=5, choices=ACTION_CHOICES, default=ACTION_DENY)
+    countries = models.CharField(max_length=1024, blank=True,
+                                 help_text="Comma-separated ISO 3166-1 alpha-2 codes (geo lists).")
     description = models.CharField(max_length=255, blank=True)
     entries = models.TextField(blank=True, help_text="One IP or CIDR per line, optional '# comment'.")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -83,6 +89,19 @@ class IpList(models.Model):
     @property
     def is_allow(self):
         return self.action == self.ACTION_ALLOW
+
+    @property
+    def is_geo(self):
+        return self.kind == self.KIND_GEO
+
+    @property
+    def country_list(self):
+        return [c for c in self.countries.split(",") if c]
+
+    @property
+    def nginx_variable(self):
+        """nginx variable set to 1 for clients in a geo list (names allow only [A-Za-z0-9_])."""
+        return "wafc_geo_" + self.name.replace("-", "_")
 
     @property
     def entry_count(self):
