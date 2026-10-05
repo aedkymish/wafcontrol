@@ -18,7 +18,7 @@
                             <!-- Show success or info messages -->
                             {% if messages %}
                                 {% for message in messages %}
-                                    <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags }}{% endif %}">{{ message }}</div>
+                                    <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags }}{% endif %}" style="white-space: pre-wrap;">{{ message }}</div>
                                 {% endfor %}
                             {% endif %}
 

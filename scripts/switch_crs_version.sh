@@ -20,7 +20,7 @@ fi
 
 # tools
 need() { for t in "$@"; do command -v "$t" >/dev/null 2>&1 || M+=("$t"); done; [[ -z "${M[*]-}" ]] || (apt-get update -y && apt-get install -y "${M[@]}"); }
-M=(); need curl jq wget tar gzip
+M=(); need curl jq tar gzip
 
 TMP_DIR="$(mktemp -d -t crs-switch-XXXXXX)"; trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -47,8 +47,13 @@ echo "[+] Target CRS: $VERSION -> $TARGET_DIR"
 # download if missing
 if [[ ! -d "$TARGET_DIR/rules" ]]; then
   echo "[+] Downloading $VERSION …"
-  wget -q "https://github.com/coreruleset/coreruleset/archive/refs/tags/${VERSION}.tar.gz" -O "$TMP_DIR/crs.tgz"
-  tar -xzf "$TMP_DIR/crs.tgz" -C "$TMP_DIR"
+  URL="https://github.com/coreruleset/coreruleset/archive/refs/tags/${VERSION}.tar.gz"
+  if ! ERR="$(curl -fsSL --retry 2 --connect-timeout 15 -o "$TMP_DIR/crs.tgz" "$URL" 2>&1)"; then
+    echo "[!] Download failed: ${ERR:-unknown error}" >&2
+    echo "[!] Check that this server can reach github.com (DNS / firewall), or set HTTPS_PROXY in .env and restart the panel." >&2
+    exit 1
+  fi
+  tar -xzf "$TMP_DIR/crs.tgz" -C "$TMP_DIR" || { echo "[!] Downloaded archive is not valid." >&2; exit 1; }
   mv "$TMP_DIR/coreruleset-${VERSION_NUM}" "$TARGET_DIR"
 fi
 
@@ -71,10 +76,11 @@ SecRule REQUEST_URI "@beginsWith /dashboard/crs/settings/" "id:1500011,phase:1,n
 EOR
 fi
 
-# wire in
+# wire in (keep a backup so a failed config test can be rolled back)
 if [[ "$SERVER" == "nginx" ]]; then
   mkdir -p "$(dirname "$MAIN_CONF")"
   touch "$MAIN_CONF"
+  cp -p "$MAIN_CONF" "$TMP_DIR/main.conf.bak"
   sed -i '/Include .*crs-setup\.conf/d' "$MAIN_CONF" || true
   sed -i '/Include .*rules\/\*\.conf/d' "$MAIN_CONF" || true
   {
@@ -83,12 +89,14 @@ if [[ "$SERVER" == "nginx" ]]; then
   } >> "$MAIN_CONF"
 else
   # Apache: just switch "current" and keep modsecurity.conf pointing to current/*
+  PREV_CURRENT="$(readlink "$CRS_CURRENT" 2>/dev/null || true)"
+  MODSEC_CONF="/etc/modsecurity/modsecurity.conf"
+  cp -p "$MODSEC_CONF" "$TMP_DIR/modsecurity.conf.bak"
   ln -sfn "$TARGET_DIR" "$CRS_CURRENT"
   chown -h root:root "$CRS_CURRENT"
   find "$TARGET_DIR" -type d -exec chmod 755 {} \;
   find "$TARGET_DIR" -type f -exec chmod 644 {} \;
 
-  MODSEC_CONF="/etc/modsecurity/modsecurity.conf"
   # replace any existing includes to always use /etc/modsecurity/crs/current/*
   if grep -q 'crs-setup.conf' "$MODSEC_CONF"; then
     sed -i -E 's#^[[:space:]]*Include(Optional)?[[:space:]]+.*/crs-setup\.conf#IncludeOptional /etc/modsecurity/crs/current/crs-setup.conf#' "$MODSEC_CONF"
@@ -104,7 +112,17 @@ fi
 
 # test & reload
 echo "[+] Testing config…"
-"${TEST_CMD[@]}"
+if ! TEST_OUT="$("${TEST_CMD[@]}" 2>&1)"; then
+  echo "[!] Config test failed with $VERSION, rolling back:" >&2
+  echo "$TEST_OUT" >&2
+  if [[ "$SERVER" == "nginx" ]]; then
+    cp -p "$TMP_DIR/main.conf.bak" "$MAIN_CONF"
+  else
+    cp -p "$TMP_DIR/modsecurity.conf.bak" "$MODSEC_CONF"
+    if [[ -n "$PREV_CURRENT" ]]; then ln -sfn "$PREV_CURRENT" "$CRS_CURRENT"; fi
+  fi
+  exit 1
+fi
 echo "[+] Reloading…"
 "${RELOAD_CMD[@]}" || true
 echo "[✓] Switched to $VERSION."
