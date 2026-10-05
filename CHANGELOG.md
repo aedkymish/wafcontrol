@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Attack request details**: each detected attack now stores the HTTP request that triggered it: method, protocol,
+  User-Agent, all headers, cookies and the request body (from ModSecurity audit log sections B and C/I, serial or
+  JSON format). Stored once per request (`AttackRequest`) and shared by all rules it triggered. A Method column was
+  added to the attacks pages and the details window shows the full request (loaded on demand).
+- Owc Setting: `AttackStoreRequestBody`, `AttackStoreCookies`, `AttackMaxBodyBytes` (default: store both, 16 KB body).
+- Syslog attack events include the method and User-Agent (body and cookies are never forwarded).
+
+### Security
+- Fixed stored XSS on the attacks pages: the attacker-controlled URI was placed inside a JavaScript template literal
+  in the "Copy" buttons.
+
+### Upgrade notes
+New table and column: run `python manage.py makemigrations wafinstaller && python manage.py migrate`, then restart
+the panel and Celery. The request body is only available if `SecAuditLogParts` includes `C` (or `I` on ModSecurity 2).
+
 ## v1.1.0
 
 ### Added

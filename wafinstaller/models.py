@@ -5,6 +5,22 @@ from django.utils.timezone import now
 
 # Create your models here.
 
+class AttackRequest(models.Model):
+    """The HTTP request behind one or more Attack rows (one per ModSecurity transaction)."""
+    unique_id = models.CharField(max_length=128, blank=True, db_index=True)
+    method = models.CharField(max_length=16, blank=True)
+    protocol = models.CharField(max_length=16, blank=True)
+    user_agent = models.CharField(max_length=1024, blank=True)
+    headers = models.JSONField(default=dict, blank=True)
+    cookies = models.JSONField(default=dict, blank=True)
+    body = models.TextField(blank=True)
+    body_truncated = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.method} {self.unique_id}"
+
+
 # models.py
 class Attack(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
@@ -20,6 +36,8 @@ class Attack(models.Model):
     host = models.CharField(max_length=255, null=True, blank=True)
     severity = models.IntegerField(default=2)      # 0=Info, 1=Low, 2=Medium, 3=High
     anomaly_score = models.IntegerField(default=0)
+    request = models.ForeignKey(AttackRequest, null=True, blank=True, on_delete=models.SET_NULL,
+                                related_name="attacks")
 
     def __str__(self):
         return f"{self.timestamp} - {self.ip} - Severity: {self.severity}"

@@ -284,7 +284,7 @@ class WafAttacksView(LoginRequiredMixin, ListView):
     login_url = "wafinstaller:login"
 
     def get_queryset(self):
-        qs = Attack.objects.all().order_by("-timestamp")
+        qs = Attack.objects.select_related("request").order_by("-timestamp")
         ip = self.request.GET.get("ip")
         rule_id = self.request.GET.get("rule_id")
         status = self.request.GET.get("status")
@@ -333,6 +333,30 @@ class WafAttacksView(LoginRequiredMixin, ListView):
         return context
 
 
+class AttackRequestView(LoginRequiredMixin, View):
+    """JSON with the HTTP request stored for one attack (loaded on demand by the details window)."""
+    login_url = "wafinstaller:login"
+
+    def get(self, request, attack_id):
+        attack = Attack.objects.select_related("request").filter(pk=attack_id).first()
+        if attack is None:
+            raise Http404("Attack not found")
+        req = attack.request
+        if req is None:
+            return JsonResponse({"available": False})
+        return JsonResponse({
+            "available": True,
+            "unique_id": req.unique_id,
+            "method": req.method,
+            "protocol": req.protocol,
+            "user_agent": req.user_agent,
+            "headers": req.headers,
+            "cookies": req.cookies,
+            "body": req.body,
+            "body_truncated": req.body_truncated,
+        })
+
+
 class TopAttackersView(LoginRequiredMixin, ListView):
     template_name = "dashboard/panel/top_attackers.html"
     context_object_name = "attackers"
@@ -374,7 +398,7 @@ class CriticalWafAttacksView(LoginRequiredMixin, ListView):
         for rid in self.NOISE_RULES:
             q &= ~Q(rule_id=rid)
 
-        attacks = Attack.objects.filter(q).order_by("-timestamp")
+        attacks = Attack.objects.select_related("request").filter(q).order_by("-timestamp")
 
         # Apply filters from GET parameters
         ip = self.request.GET.get("ip")

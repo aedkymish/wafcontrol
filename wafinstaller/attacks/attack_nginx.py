@@ -3,6 +3,8 @@ import os, re, io, glob, stat, json, hashlib, time
 from ipaddress import ip_address
 from typing import Dict, List, Optional, Tuple
 
+from wafinstaller.attacks.request_details import json_request_sections
+
 JSON_TXN_KEYS = ("transaction", "messages")
 
 SECTION_A_HEADER = re.compile(r'^\[(?P<ts>[^]]+)\]\s+(?P<uid>\S+)\s+(?P<src>[0-9A-Fa-f:.]+)\s+(?P<src_port>\d+)\s+(?P<dst>[0-9A-Fa-f:.]+)\s+(?P<dst_port>\d+)\s*$')
@@ -274,6 +276,15 @@ def _json_to_pseudoblock(obj: dict) -> str:
     rid = hashlib.sha1(uid.encode()).hexdigest()[:8]
     lines.append(f"---{rid}---A--")
     lines.append(f"[{t.get('time','')}] {uid} {src or '-'} {sport or '0'} {dst or '-'} {dport or '0'}")
+    # Request line + headers (B) and body (C), so request details work with JSON audit logs too.
+    lines.append(f"---{rid}---B--")
+    lines.extend(json_request_sections(req))
+    req_body = req.get("body")
+    if isinstance(req_body, list):
+        req_body = "".join(str(x) for x in req_body)
+    if req_body:
+        lines.append(f"---{rid}---C--")
+        lines.append(str(req_body))
     lines.append(f"---{rid}---H--")
     for m in msgs:
         rule = m.get("details", {}) or {}

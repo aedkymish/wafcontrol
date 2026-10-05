@@ -14,7 +14,8 @@ from django.utils import timezone  # <-- use Django timezone
 from pathlib import Path
 
 from .attacks.attack_nginx import determine_status
-from .models import Attack, CrsVersion, DashboardStat
+from .models import Attack, AttackRequest, CrsVersion, DashboardStat
+from .attacks.request_details import RequestDetails
 from wafinstaller.helper.utils import get_country_info
 from wafinstaller.helper.crs import load_app_settings
 from wafinstaller.helper.tasks_helpers import detect_server_kind  # ensure filename matches!
@@ -146,6 +147,7 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
 
     created = 0
     ckpt = load_ckpt()
+    capture = RequestCaptureSettings.load()
 
     try:
         blocks = []
@@ -209,6 +211,8 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
                 continue
 
             host = mod.extract_host(blk) or ""
+            # One AttackRequest per transaction, created only if at least one Attack row is stored.
+            request_obj = None
             full_uri = uri
             if ip in ip_targets:
                 cand = mod.pick_best_target(ip, uri, ip_targets[ip])
@@ -232,7 +236,10 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
                     geo_cache[ip] = country_info
 
                 try:
+                    if request_obj is None:
+                        request_obj = capture.create_request(sections, uid or uid_a)
                     Attack.objects.create(
+                        request=request_obj,
                         ip=ip,
                         country=country_info.get("country", "-"),
                         flag=country_info.get("iso_code", "-"),
@@ -261,6 +268,41 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
         except Exception:
             pass
 
+class RequestCaptureSettings:
+    """Which parts of the attacking request are stored (Owc Setting page)."""
+
+    def __init__(self, store_body: bool, store_cookies: bool, max_body: int):
+        self.store_body = store_body
+        self.store_cookies = store_cookies
+        self.max_body = max_body
+
+    @classmethod
+    def load(cls) -> "RequestCaptureSettings":
+        from wafinstaller.helper.crs import APP_KEYS
+        cfg = load_app_settings()
+        get = lambda k: str(cfg.get(k, APP_KEYS[k]["default"])).strip()
+        on = lambda k: get(k).lower() in ("1", "true", "yes", "on")
+        max_body = get("AttackMaxBodyBytes")
+        return cls(on("AttackStoreRequestBody"), on("AttackStoreCookies"),
+                   int(max_body) if max_body.isdigit() else 16384)
+
+    def create_request(self, sections, unique_id: str):
+        details = RequestDetails.from_sections(sections, max_body=self.max_body,
+                                               store_body=self.store_body, store_cookies=self.store_cookies)
+        if details.is_empty:
+            return None  # e.g. error-log fallback: no request sections available
+        return AttackRequest.objects.create(
+            unique_id=(unique_id or "")[:128],
+            method=details.method,
+            protocol=details.protocol,
+            user_agent=details.user_agent,
+            headers=details.headers,
+            cookies=details.cookies,
+            body=details.body,
+            body_truncated=details.body_truncated,
+        )
+
+
 # ---------- Per-backend public tasks ----------
 
 @shared_task
@@ -285,6 +327,8 @@ def delete_old_attacks():
     days = int(app_settings.get("AttackRetentionDays", 15))
     cutoff = timezone.now() - timedelta(days=days)  # uses Django timezone
     deleted_count, _ = Attack.objects.filter(timestamp__lt=cutoff).delete()
+    # Requests no longer referenced by any attack (bodies/headers can be large).
+    AttackRequest.objects.filter(attacks__isnull=True).delete()
     return f"Deleted {deleted_count} old attacks."
 
 

@@ -183,6 +183,8 @@ class SyslogService:
             "anomaly_score": attack.anomaly_score,
             "status": attack.status,
             "crs_version": attack.version,
+            "method": attack.request.method if attack.request else "",
+            "user_agent": attack.request.user_agent if attack.request else "",
         }, config=cfg)
 
     @classmethod
