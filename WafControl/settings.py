@@ -67,6 +67,9 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+# WafControl release shown in the panel (sidebar + footer)
+APP_VERSION = '1.1.0'
+
 ROOT_URLCONF = 'WafControl.urls'
 
 TEMPLATES = [
@@ -81,6 +84,7 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
                 'wafinstaller.context_processors.server_state',
+                'wafinstaller.context_processors.app_info',
             ],
         },
     },
