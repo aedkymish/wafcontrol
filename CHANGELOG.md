@@ -19,6 +19,12 @@
 
 ### Fixed
 - App signals were never connected (`WafinstallerConfig.ready()` was defined outside the class).
+- CRS "Latest Version: None": versions are now fetched right away on a fresh install instead of waiting for the
+  12-hour schedule, and Force Fetch reports the real error (no network, GitHub rate limit...) instead of always
+  claiming success. Optional `GITHUB_TOKEN` in `.env` raises GitHub's rate limit.
+- Force Fetch CRS Versions now requires login and CSRF protection.
+- CRS version switch: download errors are now reported (was a silent `wget -q`), and a failed config test
+  rolls back `main.conf` / the Apache `current` link instead of leaving the server pointing at a broken version.
 
 ### Upgrade notes
 A database update is required (IP Lists / Geo Lists). After updating the code:

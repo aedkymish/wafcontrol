@@ -15,6 +15,7 @@ from django.contrib.auth import get_user_model, login, update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.contrib.auth.views import LoginView, LogoutView as DjangoLogoutView
+from django.core.cache import cache
 from django.db import models, transaction
 from django.db.models import Q, Count
 from django.http import Http404, JsonResponse
@@ -51,7 +52,7 @@ from wafinstaller.helper.helpers import (
     run_updatecrs_script,
 )
 from .models import Attack, CrsVersion, DashboardStat, IpList, UserProfile
-from .tasks import fetch_crs_versions_task, run_waf_install
+from .tasks import CrsFetchError, fetch_crs_versions, fetch_crs_versions_task, run_waf_install
 from wafinstaller.helper.utils import get_crs_full_version, get_rules_dir
 from wafinstaller.helper.server_conf import ServerConfError, get_conf_manager
 from wafinstaller.helper.users import UserManagementError, UserManagementService
@@ -785,10 +786,21 @@ class ServerTrafficAnalysisView(LoginRequiredMixin, TemplateView):
 class CrsVersionListView(LoginRequiredMixin, View):
     login_url = "wafinstaller:login"
 
+    AUTO_FETCH_EVERY = 600  # seconds between automatic fetches while the list is empty
+
     def get(self, request):
         versions = CrsVersion.objects.order_by("-published_at")
         installed_version = get_installed_crs_version()
         latest_version = get_latest_crs_version()
+
+        if not versions.exists() and cache.add("crs_versions_auto_fetch", 1, self.AUTO_FETCH_EVERY):
+            # Fresh install: don't wait up to 12h for the scheduled fetch.
+            try:
+                fetch_crs_versions_task.delay()
+                messages.info(request, "No CRS versions fetched yet: fetching them now in the background. "
+                                       "Refresh in a few seconds, or use Force Fetch to see any error.")
+            except Exception:
+                pass
 
         for v in versions:
             v.normalized_tag = normalize_version(v.tag)
@@ -798,7 +810,7 @@ class CrsVersionListView(LoginRequiredMixin, View):
             "dashboard/panel/crs_versions.html",
             {
                 "versions": versions,
-                "fetched_at": versions.first().fetched_at if versions else "N/A",
+                "fetched_at": versions.aggregate(last=models.Max("fetched_at"))["last"] or "N/A",
                 "installed_version": installed_version,
                 "latest_version": latest_version,
             },
@@ -1267,12 +1279,15 @@ class AdminProfileView(LoginRequiredMixin, View):
 # Force-fetch CRS versions
 # -------------------------
 
-@method_decorator(csrf_exempt, name="dispatch")
-class ForceFetchCrsVersionsView(View):
+class ForceFetchCrsVersionsView(LoginRequiredMixin, View):
+    login_url = "wafinstaller:login"
+
     def post(self, request):
         try:
-            fetch_crs_versions_task()
-            messages.success(request, "Successfully fetched the latest CRS versions.")
+            count = fetch_crs_versions()
+            messages.success(request, f"Fetched {count} CRS versions. Latest: {get_latest_crs_version()}.")
+        except CrsFetchError as e:
+            messages.error(request, f"Failed to fetch CRS versions: {e}")
         except Exception as e:
             messages.error(request, f"Failed to fetch CRS versions: {e}")
         return redirect("wafinstaller:crs_version")

@@ -316,34 +316,69 @@ def run_crs_version_install(self, version: str):
 
 # ---------- Fetch CRS versions from GitHub ----------
 
+class CrsFetchError(Exception):
+    """Raised with a human-readable reason when CRS releases cannot be fetched."""
+
+
+CRS_RELEASES_URL = "https://api.github.com/repos/coreruleset/coreruleset/releases"
+
+
+def fetch_crs_versions() -> int:
+    """Fetch CRS releases from GitHub into CrsVersion. Returns the number saved.
+
+    Raises CrsFetchError explaining why nothing could be fetched (network, rate limit...).
+    Set GITHUB_TOKEN in .env to raise GitHub's limit of 60 anonymous requests/hour.
+    """
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"WafControl/{getattr(settings, 'APP_VERSION', '1')}",
+    }
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    saved = 0
+    for page in (1, 2):
+        try:
+            resp = requests.get(CRS_RELEASES_URL, params={"per_page": 20, "page": page},
+                                timeout=15, headers=headers)
+        except requests.RequestException as e:
+            if page == 1:
+                raise CrsFetchError(f"Cannot reach api.github.com from this server: {e}") from e
+            break
+        if resp.status_code != 200:
+            if page > 1:
+                break
+            if resp.status_code in (403, 429) and resp.headers.get("X-RateLimit-Remaining") == "0":
+                reset = resp.headers.get("X-RateLimit-Reset")
+                when = datetime.fromtimestamp(int(reset), pytimezone.utc).strftime("%H:%M UTC") if reset else "later"
+                raise CrsFetchError(f"GitHub API rate limit exceeded, try again after {when} "
+                                    f"(or set GITHUB_TOKEN in .env).")
+            raise CrsFetchError(f"GitHub responded with HTTP {resp.status_code}: {resp.text[:200]}")
+        for r in resp.json() or []:
+            tag = r.get("tag_name", "")
+            published_at = r.get("published_at", "")
+            if not tag or not published_at or r.get("draft"):
+                continue
+            dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytimezone.utc)
+            CrsVersion.objects.update_or_create(
+                tag=tag,
+                # fetched_at is auto_now_add: refresh it explicitly so "Last Fetched" is accurate.
+                defaults={"published_at": dt, "zip_url": r.get("zipball_url", ""), "fetched_at": timezone.now()},
+            )
+            saved += 1
+    if not saved:
+        raise CrsFetchError("GitHub returned no CRS releases.")
+    return saved
+
+
 @shared_task
 def fetch_crs_versions_task():
     try:
-        all_versions: List[str] = []
-        headers = {
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "WafControl/1.0",
-        }
-        for page in (1, 2):
-            url = f"https://api.github.com/repos/coreruleset/coreruleset/releases?per_page=20&page={page}"
-            resp = requests.get(url, timeout=15, headers=headers)
-            if resp.status_code != 200:
-                logger.error("GitHub responded with status %s: %s", resp.status_code, resp.text[:200])
-                break
-            releases = resp.json() or []
-            for r in releases:
-                tag = r.get("tag_name", "")
-                published_at = r.get("published_at", "")
-                zip_url = r.get("zipball_url", "")
-                if not tag or not published_at:
-                    continue
-                # Parse to aware datetime (UTC)
-                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytimezone.utc)
-                CrsVersion.objects.update_or_create(
-                    tag=tag,
-                    defaults={"published_at": dt, "zip_url": zip_url},
-                )
-                all_versions.append(tag)
-        logger.info("Fetched and saved %d CRS versions.", len(all_versions))
+        count = fetch_crs_versions()
+        logger.info("Fetched and saved %d CRS versions.", count)
+        return count
+    except CrsFetchError as e:
+        logger.error("CRS fetch failed: %s", e)
     except Exception as e:
         logger.exception("CRS Fetch Error: %s", e)
