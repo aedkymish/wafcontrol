@@ -2,6 +2,8 @@ from django import forms
 from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.models import User
 from django.core.validators import RegexValidator
+
+from wafinstaller.models import IpList
 from django.contrib.auth.forms import PasswordChangeForm, SetPasswordForm, UserCreationForm
 
 class AdminLogin(AuthenticationForm):
@@ -113,3 +115,40 @@ class SyslogConfigForm(_BootstrapFormMixin, forms.Form):
             self.add_error("host", "Required when syslog is enabled.")
         data["host"] = (data.get("host") or "").strip()
         return data
+
+
+# -------------------------
+# IP lists
+# -------------------------
+
+class IpListForm(_BootstrapFormMixin, forms.ModelForm):
+    class Meta:
+        model = IpList
+        fields = ["name", "action", "description", "entries"]
+        widgets = {
+            "entries": forms.Textarea(attrs={
+                "rows": 14, "spellcheck": "false", "style": "font-family: monospace;",
+                "placeholder": "192.168.1.10\n10.0.0.0/8      # office VPN\n2001:db8::/32",
+            }),
+        }
+        help_texts = {
+            "name": "Used as the include file name. Lowercase letters, digits, '-' and '_'.",
+        }
+
+    name = forms.CharField(max_length=64, validators=[RegexValidator(
+        r"^[a-z0-9][a-z0-9_-]{0,63}$", "Use lowercase letters, digits, '-' or '_'.")])
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            # The name is the file path referenced by server configs: keep it stable.
+            self.fields["name"].disabled = True
+            self.fields["name"].help_text = "The name cannot be changed: server configs include this file."
+        self._apply_bootstrap()
+
+    def clean_entries(self):
+        from wafinstaller.helper.ip_lists import normalize_entries, parse_entries
+        entries, errors = parse_entries(self.cleaned_data.get("entries", ""))
+        if errors:
+            raise forms.ValidationError(errors)
+        return normalize_entries(entries)

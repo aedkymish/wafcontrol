@@ -172,6 +172,13 @@
                         </a>
                     </li>
 
+                    <!-- IP Lists -->
+                    <li class="{% if request.resolver_match.url_name in 'ip_lists ip_list_add ip_list_edit' %}active{% endif %}">
+                        <a href="{% url 'wafinstaller:ip_lists' %}" class="iq-waves-effect">
+                            <i class="las la-list-alt iq-arrow-left"></i><span>IP Lists</span>
+                        </a>
+                    </li>
+
                     <!-- Syslog -->
                     <li class="{% if request.resolver_match.url_name == 'syslog_config' %}active{% endif %}">
                         <a href="{% url 'wafinstaller:syslog_config' %}" class="iq-waves-effect">

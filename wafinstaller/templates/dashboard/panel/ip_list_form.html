@@ -1,0 +1,53 @@
+{% extends 'dashboard/main/main.html' %}
+{% block title %}{% if is_new %}New IP List{% else %}IP List {{ ip_list.name }}{% endif %} - Owasp Wafcontrol{% endblock %}
+
+{% block content %}
+    <div id="content-page" class="content-page">
+        <div class="container-fluid">
+            {% for message in messages %}
+                <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags }}{% endif %}"
+                     style="white-space: pre-wrap;">{{ message }}</div>
+            {% endfor %}
+
+            <div class="row">
+                <div class="{% if is_new %}col-lg-8{% else %}col-lg-6{% endif %}">
+                    <div class="iq-card">
+                        <div class="iq-card-header d-flex justify-content-between">
+                            <div class="iq-header-title">
+                                <h4 class="card-title">{% if is_new %}New IP List{% else %}Edit IP List{% endif %}</h4>
+                            </div>
+                            <a href="{% url 'wafinstaller:ip_lists' %}" class="btn btn-sm btn-secondary align-self-center">Back</a>
+                        </div>
+                        <div class="iq-card-body">
+                            <form method="post" novalidate>
+                                {% csrf_token %}
+                                {% include 'dashboard/panel/_form_fields.html' with form=form %}
+                                <small class="text-muted d-block mb-3">One IPv4/IPv6 address or CIDR range per line.
+                                    Text after <code>#</code> is kept as a comment. Duplicates are removed.</small>
+                                <button type="submit" class="btn btn-primary">Save &amp; Apply</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+                {% if not is_new %}
+                    <div class="col-lg-6">
+                        <div class="iq-card">
+                            <div class="iq-card-header">
+                                <div class="iq-header-title">
+                                    <h4 class="card-title">How to use
+                                        {% if ip_list.is_allow %}<span class="badge badge-success">Allow</span>
+                                        {% else %}<span class="badge badge-danger">Deny</span>{% endif %}
+                                    </h4>
+                                </div>
+                            </div>
+                            <div class="iq-card-body">
+                                {% include 'dashboard/panel/_ip_list_guide.html' with servers=servers action=ip_list.action %}
+                            </div>
+                        </div>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+{% endblock %}

@@ -82,24 +82,24 @@ class ServerConfManager:
             raise ServerConfError(f"File already exists: {name}")
         self._write(path, content)
         enabled_now = enable and self.SUPPORTS_ENABLE and self._enable(name)
-        ok, output = self._test()
+        ok, output = self.test_config()
         if not ok:
             if enabled_now:
                 self._disable(name)
             os.remove(path)
             raise ServerConfError(f"Config test failed, file not created:\n{output}")
-        return self._reload()
+        return self.reload()
 
     def save(self, name: str, content: str) -> str:
         path = self._existing_path(name)
         with open(path, "r") as f:
             backup = f.read()
         self._write(path, content)
-        ok, output = self._test()
+        ok, output = self.test_config()
         if not ok:
             self._write(path, backup)
             raise ServerConfError(f"Config test failed, changes reverted:\n{output}")
-        return self._reload()
+        return self.reload()
 
     # ---------- hooks ----------
 
@@ -146,11 +146,11 @@ class ServerConfManager:
         except FileNotFoundError:
             return 127, f"{cmd[0]} not found."
 
-    def _test(self) -> Tuple[bool, str]:
+    def test_config(self) -> Tuple[bool, str]:
         code, output = self._run(self.TEST_CMD)
         return code == 0, output
 
-    def _reload(self) -> str:
+    def reload(self) -> str:
         code, output = self._run(self.RELOAD_CMD)
         if code != 0:
             return f"Saved, but {self.label} reload failed: {output}"

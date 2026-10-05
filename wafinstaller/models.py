@@ -60,3 +60,30 @@ class AppSetting(models.Model):
 
     def __str__(self):
         return f"{self.key} = {self.value}"
+
+class IpList(models.Model):
+    """Named list of IPs / CIDR ranges rendered into include files for nginx and Apache."""
+    ACTION_ALLOW = "allow"
+    ACTION_DENY = "deny"
+    ACTION_CHOICES = [(ACTION_ALLOW, "Allow"), (ACTION_DENY, "Deny")]
+
+    name = models.CharField(max_length=64, unique=True)
+    action = models.CharField(max_length=5, choices=ACTION_CHOICES, default=ACTION_DENY)
+    description = models.CharField(max_length=255, blank=True)
+    entries = models.TextField(blank=True, help_text="One IP or CIDR per line, optional '# comment'.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"{self.name} ({self.action})"
+
+    @property
+    def is_allow(self):
+        return self.action == self.ACTION_ALLOW
+
+    @property
+    def entry_count(self):
+        return sum(1 for line in self.entries.splitlines() if line.split("#", 1)[0].strip())

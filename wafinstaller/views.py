@@ -15,7 +15,7 @@ from django.contrib.auth import get_user_model, login, update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.contrib.auth.views import LoginView, LogoutView as DjangoLogoutView
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q, Count
 from django.http import Http404, JsonResponse
 from django.shortcuts import redirect, render
@@ -40,6 +40,7 @@ from wafinstaller.helper.crs import (
 from .forms import (
     AdminLogin, AdminPasswordForm, AdminProfileForm,
     UserCreateForm, UserEditForm, UserSetPasswordForm, SyslogConfigForm,
+    IpListForm,
 )
 from wafinstaller.helper.helpers import (
     get_installed_crs_version,
@@ -49,11 +50,12 @@ from wafinstaller.helper.helpers import (
     run_switch_version_script,
     run_updatecrs_script,
 )
-from .models import Attack, CrsVersion, DashboardStat, UserProfile
+from .models import Attack, CrsVersion, DashboardStat, IpList, UserProfile
 from .tasks import fetch_crs_versions_task, run_waf_install
 from wafinstaller.helper.utils import get_crs_full_version, get_rules_dir
 from wafinstaller.helper.server_conf import ServerConfError, get_conf_manager
 from wafinstaller.helper.users import UserManagementError, UserManagementService
+from wafinstaller.helper.ip_lists import WRITERS, IpListError, IpListService
 from wafinstaller.helper.syslog import WARNING, SyslogConfig, SyslogService, client_ip
 
 User = get_user_model()
@@ -1488,3 +1490,102 @@ class SyslogConfigView(SuperuserRequiredMixin, View):
         SyslogService.save_config(new)
         messages.success(request, "Syslog settings saved.")
         return redirect("wafinstaller:syslog_config")
+
+
+# -------------------------
+# IP lists (allow / deny include files)
+# -------------------------
+
+class IpListMixin(SuperuserRequiredMixin):
+
+    @staticmethod
+    def server_paths(ip_list=None):
+        """[(key, label, include path, installed)] for the usage guide."""
+        name = ip_list.name if ip_list else "<name>"
+        return [
+            {"key": w.key, "label": w.label, "installed": w.is_available(),
+             "path": os.path.join(w.base_dir(), f"{name}.conf")}
+            for w in WRITERS
+        ]
+
+    def _save(self, request, form):
+        """Save the list and publish its include files atomically. Returns the list or None."""
+        try:
+            with transaction.atomic():
+                ip_list = form.save()
+                results = IpListService().publish(ip_list)
+        except IpListError as e:
+            messages.error(request, str(e))
+            return None
+        messages.success(request, f"IP list '{ip_list.name}' saved. " + " ".join(results))
+        return ip_list
+
+
+class IpListListView(IpListMixin, View):
+    template_name = "dashboard/panel/ip_lists.html"
+
+    def get(self, request):
+        return render(request, self.template_name, {
+            "ip_lists": IpList.objects.all(),
+            "servers": self.server_paths(),
+        })
+
+
+class IpListCreateView(IpListMixin, View):
+    template_name = "dashboard/panel/ip_list_form.html"
+
+    def get(self, request):
+        return render(request, self.template_name, {"form": IpListForm(), "is_new": True})
+
+    def post(self, request):
+        form = IpListForm(request.POST)
+        if form.is_valid():
+            ip_list = self._save(request, form)
+            if ip_list:
+                return redirect("wafinstaller:ip_list_edit", list_id=ip_list.pk)
+        return render(request, self.template_name, {"form": form, "is_new": True})
+
+
+class IpListEditView(IpListMixin, View):
+    template_name = "dashboard/panel/ip_list_form.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        self.ip_list = IpList.objects.filter(pk=kwargs.get("list_id")).first()
+        if self.ip_list is None and request.user.is_authenticated:
+            raise Http404("IP list not found")
+        return super().dispatch(request, *args, **kwargs)
+
+    def _render(self, request, form):
+        # Reload so a failed save doesn't show unsaved values as the guide's state.
+        ip_list = IpList.objects.get(pk=self.ip_list.pk)
+        return render(request, self.template_name, {
+            "form": form, "is_new": False, "ip_list": ip_list,
+            "servers": self.server_paths(ip_list),
+        })
+
+    def get(self, request, list_id):
+        return self._render(request, IpListForm(instance=self.ip_list))
+
+    def post(self, request, list_id):
+        form = IpListForm(request.POST, instance=self.ip_list)
+        if form.is_valid() and self._save(request, form):
+            return redirect("wafinstaller:ip_list_edit", list_id=list_id)
+        return self._render(request, form)
+
+
+class IpListDeleteView(IpListMixin, View):
+
+    def post(self, request, list_id):
+        ip_list = IpList.objects.filter(pk=list_id).first()
+        if ip_list is None:
+            raise Http404("IP list not found")
+        try:
+            IpListService().remove(ip_list)
+        except IpListError as e:
+            messages.error(request, f"Cannot delete '{ip_list.name}': it is probably still included "
+                                    f"by a server config. Remove the include line first.\n{e}")
+            return redirect("wafinstaller:ip_lists")
+        name = ip_list.name
+        ip_list.delete()
+        messages.success(request, f"IP list '{name}' deleted.")
+        return redirect("wafinstaller:ip_lists")
