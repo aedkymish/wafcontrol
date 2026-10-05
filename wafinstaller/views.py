@@ -39,7 +39,7 @@ from wafinstaller.helper.crs import (
 )
 from .forms import (
     AdminLogin, AdminPasswordForm, AdminProfileForm,
-    UserCreateForm, UserEditForm, UserSetPasswordForm,
+    UserCreateForm, UserEditForm, UserSetPasswordForm, SyslogConfigForm,
 )
 from wafinstaller.helper.helpers import (
     get_installed_crs_version,
@@ -54,6 +54,7 @@ from .tasks import fetch_crs_versions_task, run_waf_install
 from wafinstaller.helper.utils import get_crs_full_version, get_rules_dir
 from wafinstaller.helper.server_conf import ServerConfError, get_conf_manager
 from wafinstaller.helper.users import UserManagementError, UserManagementService
+from wafinstaller.helper.syslog import WARNING, SyslogConfig, SyslogService, client_ip
 
 User = get_user_model()
 
@@ -128,6 +129,8 @@ class Verify2FAView(View):
 
         totp = pyotp.TOTP(secret)
         if not totp.verify(code):
+            SyslogService.audit("2fa_failed", username=user.get_username(),
+                                ip=client_ip(request), severity=WARNING)
             messages.error(request, _("Invalid 2FA code. Please try again."))
             return render(request, self.template_name)
 
@@ -1442,3 +1445,46 @@ class UserDeleteView(SuperuserRequiredMixin, View):
         except UserManagementError as e:
             messages.error(request, str(e))
         return redirect("wafinstaller:users")
+
+
+# -------------------------
+# Syslog forwarding config
+# -------------------------
+
+class SyslogConfigView(SuperuserRequiredMixin, View):
+    template_name = "dashboard/panel/syslog_config.html"
+
+    def _render(self, request, form):
+        return render(request, self.template_name, {
+            "form": form, "saved_enabled": SyslogService.config().enabled,
+        })
+
+    def get(self, request):
+        return self._render(request, SyslogConfigForm(initial=SyslogService.config().as_dict()))
+
+    def post(self, request):
+        form = SyslogConfigForm(request.POST)
+        if not form.is_valid():
+            return self._render(request, form)
+
+        new = SyslogConfig(**form.cleaned_data)
+
+        if "test" in request.POST:
+            if not new.host:
+                messages.error(request, "Enter a syslog server to test.")
+            else:
+                try:
+                    SyslogService.test(new)
+                    messages.success(request, f"Test message sent to {new.host}:{new.port} ({new.protocol.upper()}).")
+                except OSError as e:
+                    messages.error(request, f"Failed to send test message: {e}")
+            return self._render(request, form)
+
+        old = SyslogService.config()
+        if old.enabled and not new.enabled:
+            # Report the shutdown with the old config: the audit middleware can't once it's off.
+            SyslogService.audit("syslog_disabled", username=request.user.get_username(),
+                                ip=client_ip(request), severity=WARNING, config=old, sync=True)
+        SyslogService.save_config(new)
+        messages.success(request, "Syslog settings saved.")
+        return redirect("wafinstaller:syslog_config")

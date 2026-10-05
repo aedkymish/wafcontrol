@@ -172,6 +172,13 @@
                         </a>
                     </li>
 
+                    <!-- Syslog -->
+                    <li class="{% if request.resolver_match.url_name == 'syslog_config' %}active{% endif %}">
+                        <a href="{% url 'wafinstaller:syslog_config' %}" class="iq-waves-effect">
+                            <i class="las la-satellite-dish iq-arrow-left"></i><span>Syslog Config</span>
+                        </a>
+                    </li>
+
                     <!-- Users Management -->
                     <li class="{% if request.resolver_match.url_name in 'users user_add user_edit' %}active{% endif %}">
                         <a href="{% url 'wafinstaller:users' %}" class="iq-waves-effect">

@@ -80,3 +80,36 @@ class UserSetPasswordForm(_BootstrapFormMixin, SetPasswordForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._apply_bootstrap()
+
+
+# -------------------------
+# Syslog
+# -------------------------
+
+class SyslogConfigForm(_BootstrapFormMixin, forms.Form):
+    enabled = forms.BooleanField(required=False, label="Enable syslog forwarding")
+    host = forms.CharField(required=False, max_length=255, label="Syslog server",
+                           help_text="Hostname or IP address of the syslog / SIEM server.")
+    port = forms.IntegerField(min_value=1, max_value=65535, initial=514, label="Port")
+    protocol = forms.ChoiceField(choices=[("udp", "UDP"), ("tcp", "TCP")], label="Protocol")
+    facility = forms.ChoiceField(label="Facility")
+    format = forms.ChoiceField(choices=[("rfc5424", "RFC 5424"), ("rfc3164", "RFC 3164 (BSD)")],
+                               label="Message format")
+    app_name = forms.CharField(max_length=48, initial="wafcontrol", label="App name / tag",
+                               validators=[RegexValidator(r"^[A-Za-z0-9._-]+$",
+                                                          "Use letters, digits, '.', '_' or '-'.")])
+    send_attacks = forms.BooleanField(required=False, label="Send WAF attacks")
+    send_audit = forms.BooleanField(required=False, label="Send user actions (audit log)")
+
+    def __init__(self, *args, **kwargs):
+        from wafinstaller.helper.syslog import FACILITIES
+        super().__init__(*args, **kwargs)
+        self.fields["facility"].choices = [(f, f) for f in FACILITIES]
+        self._apply_bootstrap()
+
+    def clean(self):
+        data = super().clean()
+        if data.get("enabled") and not (data.get("host") or "").strip():
+            self.add_error("host", "Required when syslog is enabled.")
+        data["host"] = (data.get("host") or "").strip()
+        return data
