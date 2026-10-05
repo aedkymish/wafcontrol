@@ -1,5 +1,5 @@
 {% extends 'dashboard/main/main.html' %}
-{% block title %}Nginx Config - Owasp Wafcontrol{% endblock %}
+{% block title %}{{ server_label }} Config - Owasp Wafcontrol{% endblock %}
 
 {% block content %}
     <div id="content-page" class="content-page">
@@ -15,7 +15,7 @@
                     <div class="iq-card">
                         <div class="iq-card-header d-flex justify-content-between">
                             <div class="iq-header-title">
-                                <h4 class="card-title">Nginx Config Files - {{ conf_dir }}/*.conf</h4>
+                                <h4 class="card-title">{{ server_label }} Config Files - {{ conf_dir }}/*.conf</h4>
                             </div>
                             {% if not conf_error %}
                                 <button type="button" class="btn btn-sm btn-success align-self-center"
@@ -34,6 +34,7 @@
                                             <th>#</th>
                                             <th>Filename</th>
                                             <th>Size</th>
+                                            {% if supports_enable %}<th>Status</th>{% endif %}
                                             <th>Actions</th>
                                         </tr>
                                         </thead>
@@ -43,6 +44,15 @@
                                                 <td>{{ forloop.counter }}</td>
                                                 <td>{{ file.name }}</td>
                                                 <td>{{ file.size|filesizeformat }}</td>
+                                                {% if supports_enable %}
+                                                    <td>
+                                                        {% if file.enabled %}
+                                                            <span class="badge badge-success">Enabled</span>
+                                                        {% else %}
+                                                            <span class="badge badge-secondary">Disabled</span>
+                                                        {% endif %}
+                                                    </td>
+                                                {% endif %}
                                                 <td>
                                                     <button type="button" class="btn btn-sm btn-primary"
                                                             data-file="{{ file.name }}" data-edit="0"
@@ -89,7 +99,7 @@
                         <textarea id="confTextarea" class="form-control" spellcheck="false"
                                   style="height: 60vh; font-family: monospace;"></textarea>
                         <button id="confSaveBtn" class="btn btn-success mt-3" onclick="saveConf()">
-                            Save &amp; Reload Nginx
+                            Save &amp; Reload {{ server_label }}
                         </button>
                     </div>
                 </div>
@@ -101,7 +111,7 @@
     <div class="modal fade" id="createConfModal" tabindex="-1" role="dialog" aria-labelledby="createConfLabel"
          aria-hidden="true">
         <div class="modal-dialog modal-xl" role="document">
-            <form method="post" action="{% url 'wafinstaller:nginx_conf' %}" class="modal-content">
+            <form method="post" action="{% url 'wafinstaller:server_conf' server %}" class="modal-content">
                 {% csrf_token %}
                 <div class="modal-header bg-success text-white">
                     <h5 class="modal-title" id="createConfLabel">New Config File</h5>
@@ -120,18 +130,16 @@
                     <div class="form-group">
                         <label for="newContent">Content</label>
                         <textarea id="newContent" name="content" class="form-control" spellcheck="false"
-                                  style="height: 45vh; font-family: monospace;">server {
-    listen 80;
-    server_name example.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-    }
-}
-</textarea>
+                                  style="height: 45vh; font-family: monospace;">{{ default_template }}</textarea>
                     </div>
-                    <small class="text-muted">The file is checked with <code>nginx -t</code> before nginx is
-                        reloaded. If the check fails, the file is not created.</small>
+                    {% if supports_enable %}
+                        <div class="custom-control custom-checkbox mb-2">
+                            <input type="checkbox" class="custom-control-input" id="enableSite" name="enable" checked>
+                            <label class="custom-control-label" for="enableSite">Enable site (link into sites-enabled)</label>
+                        </div>
+                    {% endif %}
+                    <small class="text-muted">The configuration is tested before {{ server_label }} is
+                        reloaded. If the test fails, the file is not created.</small>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
@@ -166,7 +174,7 @@
             showConfAlert("", "");
             $("#confModal").modal("show");
 
-            fetch(`/nginx/conf/view/${encodeURIComponent(filename)}/`)
+            fetch(`/{{ server }}/conf/view/${encodeURIComponent(filename)}/`)
                 .then(r => r.json())
                 .then(data => {
                     if (!data.success) {
@@ -187,7 +195,7 @@
         function saveConf() {
             const btn = document.getElementById("confSaveBtn");
             btn.disabled = true;
-            fetch(`/nginx/conf/save/${encodeURIComponent(currentConf)}/`, {
+            fetch(`/{{ server }}/conf/save/${encodeURIComponent(currentConf)}/`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",

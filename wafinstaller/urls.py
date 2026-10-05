@@ -9,7 +9,7 @@ from wafinstaller.views import (
     ModSecuritySettingsView, CustomRulesView, AddCustomRuleView, DeleteCustomRuleView,
     EditCustomRuleView, AppSettingsView, AdminProfileView, Verify2FAView,
     CustomLogoutView, HomeRedirectView, CrsUpdateSyncView, ForceFetchCrsVersionsView,
-    NginxConfListView, NginxConfReadView, NginxConfSaveView
+    ServerConfListView, ServerConfReadView, ServerConfSaveView
 )
 
 app_name = 'wafinstaller'
@@ -57,10 +57,10 @@ urlpatterns = [
     path('custom-rules/delete/<int:rule_id>/', DeleteCustomRuleView.as_view(), name="delete_custom_rule"),
     path("custom-rules/edit/<str:rule_id>/", EditCustomRuleView.as_view(), name="edit_custom_rule"),
 
-    # Nginx conf.d
-    path('dashboard/nginx/conf/', NginxConfListView.as_view(), name='nginx_conf'),
-    path('nginx/conf/view/<str:filename>/', NginxConfReadView.as_view(), name='nginx_conf_view'),
-    path('nginx/conf/save/<str:filename>/', NginxConfSaveView.as_view(), name='nginx_conf_save'),
+    # Web server config files (server = nginx | apache)
+    path('dashboard/<str:server>/conf/', ServerConfListView.as_view(), name='server_conf'),
+    path('<str:server>/conf/view/<str:filename>/', ServerConfReadView.as_view(), name='server_conf_view'),
+    path('<str:server>/conf/save/<str:filename>/', ServerConfSaveView.as_view(), name='server_conf_save'),
 
     # App config + Admin profile
     path("dashboard/settings/", AppSettingsView.as_view(), name="app_settings"),

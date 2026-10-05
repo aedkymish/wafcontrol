@@ -79,7 +79,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
-                'wafinstaller.context_processors.nginx_state',
+                'wafinstaller.context_processors.server_state',
             ],
         },
     },
