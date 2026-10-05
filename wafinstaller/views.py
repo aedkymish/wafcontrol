@@ -1498,6 +1498,22 @@ class SyslogConfigView(SuperuserRequiredMixin, View):
 
 class IpListMixin(SuperuserRequiredMixin):
 
+    def dispatch(self, request, *args, **kwargs):
+        if request.user.is_authenticated and not self.table_ready():
+            return render(request, "dashboard/panel/ip_lists.html", {
+                "missing_table": True, "servers": self.server_paths(),
+            })
+        return super().dispatch(request, *args, **kwargs)
+
+    @staticmethod
+    def table_ready():
+        """IpList is a newer model: its table exists only after `migrate` was run on update."""
+        from django.db import connection
+        try:
+            return IpList._meta.db_table in connection.introspection.table_names()
+        except Exception:
+            return False
+
     @staticmethod
     def server_paths(ip_list=None):
         """[(key, label, include path, installed)] for the usage guide."""
@@ -1550,9 +1566,10 @@ class IpListEditView(IpListMixin, View):
     template_name = "dashboard/panel/ip_list_form.html"
 
     def dispatch(self, request, *args, **kwargs):
-        self.ip_list = IpList.objects.filter(pk=kwargs.get("list_id")).first()
-        if self.ip_list is None and request.user.is_authenticated:
-            raise Http404("IP list not found")
+        if self.table_ready():
+            self.ip_list = IpList.objects.filter(pk=kwargs.get("list_id")).first()
+            if self.ip_list is None and request.user.is_authenticated:
+                raise Http404("IP list not found")
         return super().dispatch(request, *args, **kwargs)
 
     def _render(self, request, form):

@@ -9,6 +9,14 @@
                      style="white-space: pre-wrap;">{{ message }}</div>
             {% endfor %}
 
+            {% if missing_table %}
+                <div class="alert alert-warning d-block">
+                    <strong>Database update required.</strong> The IP Lists table does not exist yet.
+                    Run the following in the WafControl directory (with its virtualenv active), then restart the panel:
+                    <pre class="bg-dark text-white p-2 rounded mt-2 mb-0">python manage.py makemigrations wafinstaller
+python manage.py migrate</pre>
+                </div>
+            {% else %}
             <div class="row">
                 <div class="col-lg-12">
                     <div class="iq-card">
@@ -77,6 +85,7 @@
                     </div>
                 </div>
             </div>
+            {% endif %}
         </div>
     </div>
 {% endblock %}
