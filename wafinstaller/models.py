@@ -38,6 +38,8 @@ class Attack(models.Model):
     anomaly_score = models.IntegerField(default=0)
     request = models.ForeignKey(AttackRequest, null=True, blank=True, on_delete=models.SET_NULL,
                                 related_name="attacks")
+    # ModSecurity unique_id of the request: deduplicates re-read log entries without hiding repeated attacks.
+    txn_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
 
     def __str__(self):
         return f"{self.timestamp} - {self.ip} - Severity: {self.severity}"

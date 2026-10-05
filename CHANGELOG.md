@@ -16,6 +16,11 @@
   best effort, NUL bytes are stripped, store errors are logged, and when the tables are out of date the task logs
   that a migration is required and keeps its checkpoint so the attacks are stored once `migrate` is run.
 
+- Repeated attacks were never stored again: duplicates were detected by content (IP, URI, rule, status...) with no
+  time limit, so the same attack sent again (e.g. the same URL from Firefox, then curl) was silently skipped.
+  Duplicates are now detected by ModSecurity's `unique_id` + rule (new `Attack.txn_id`), so re-read log entries are
+  still ignored while every new request is stored.
+
 ### Security
 - Fixed stored XSS on the attacks pages: the attacker-controlled URI was placed inside a JavaScript template literal
   in the "Copy" buttons.

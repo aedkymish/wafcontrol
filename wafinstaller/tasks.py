@@ -231,15 +231,17 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
                 if cand:
                     full_uri = cand
 
+            # ModSecurity's unique_id identifies the request: the same log entry re-read later is a
+            # duplicate, but the same attack sent again (new request, new id) must be stored again.
+            txn = _no_nul(uid or uid_a or "")[:128]
+
             for rid, msg in hits:
-                sig = mod.build_sig(ip or "", f"{host}|{full_uri}" or "", rid or "", msg or "", ver or "", status)
+                sig = mod.build_sig(ip or "", f"{host}|{full_uri}|{txn}", rid or "", msg or "", ver or "", status)
                 if sig in inrun_seen:
                     continue
                 inrun_seen.add(sig)
 
-                if Attack.objects.filter(
-                        ip=ip, uri=full_uri, host=host or None, rule_id=rid, message=msg, version=ver, status=status
-                ).exists():
+                if _already_stored(txn, ip, full_uri, host, rid, msg, ver, status):
                     continue
 
                 country_info = geo_cache.get(ip)
@@ -257,6 +259,7 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
                                        backend, e)
                 try:
                     Attack.objects.create(
+                        txn_id=txn,
                         request=request_obj,
                         ip=ip,
                         country=country_info.get("country", "-"),
@@ -306,10 +309,27 @@ def _attack_schema_ready() -> bool:
             return False
         with connection.cursor() as cursor:
             columns = {c.name for c in connection.introspection.get_table_description(cursor, Attack._meta.db_table)}
-        _SCHEMA_READY = "request_id" in columns
+        _SCHEMA_READY = {"request_id", "txn_id"} <= columns
     except Exception:
         return False
     return _SCHEMA_READY
+
+
+LEGACY_DEDUPE_WINDOW = timedelta(hours=24)
+
+
+def _already_stored(txn, ip, uri, host, rid, msg, ver, status) -> bool:
+    """True if this rule hit of this request is already in the database."""
+    same_content = dict(ip=ip, uri=_no_nul(uri or "")[:2048], host=_no_nul(host)[:255] or None,
+                        rule_id=_no_nul(rid or ""), message=_no_nul(msg or ""), version=ver or "-", status=status)
+    if not txn:
+        # No request id (e.g. error-log fallback): only the content can identify it.
+        return Attack.objects.filter(**same_content).exists()
+    if Attack.objects.filter(txn_id=txn, rule_id=same_content["rule_id"]).exists():
+        return True
+    # Rows stored before txn_id existed: avoid re-adding them when old log entries are re-read.
+    return Attack.objects.filter(txn_id="", timestamp__gte=timezone.now() - LEGACY_DEDUPE_WINDOW,
+                                 **same_content).exists()
 
 
 def _no_nul(value):
