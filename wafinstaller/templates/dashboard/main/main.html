@@ -149,6 +149,15 @@
                     </li>
 
 
+                    <!-- Nginx Config (only when nginx is installed) -->
+                    {% if nginx_installed %}
+                    <li class="{% if request.resolver_match.url_name == 'nginx_conf' %}active{% endif %}">
+                        <a href="{% url 'wafinstaller:nginx_conf' %}" class="iq-waves-effect">
+                            <i class="las la-server iq-arrow-left"></i><span>Nginx Config</span>
+                        </a>
+                    </li>
+                    {% endif %}
+
                     <!-- Owc Setting -->
                     <li class="{% if request.resolver_match.url_name == 'app_settings' %}active{% endif %}">
                         <a href="{% url 'wafinstaller:app_settings' %}" class="iq-waves-effect">

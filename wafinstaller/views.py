@@ -49,6 +49,7 @@ from wafinstaller.helper.helpers import (
 from .models import Attack, CrsVersion, DashboardStat, UserProfile
 from .tasks import fetch_crs_versions_task, run_waf_install
 from wafinstaller.helper.utils import get_crs_full_version, get_rules_dir
+from wafinstaller.helper.nginx_conf import NginxConfError, NginxConfManager
 
 User = get_user_model()
 
@@ -1265,3 +1266,59 @@ class ForceFetchCrsVersionsView(View):
         except Exception as e:
             messages.error(request, f"Failed to fetch CRS versions: {e}")
         return redirect("wafinstaller:crs_version")
+
+
+# -------------------------
+# Nginx conf.d management
+# -------------------------
+
+class NginxConfListView(LoginRequiredMixin, View):
+    """List /etc/nginx/conf.d/*.conf files and create new ones."""
+    template_name = "dashboard/panel/nginx_conf.html"
+    login_url = "wafinstaller:login"
+
+    def get(self, request):
+        manager = NginxConfManager()
+        context = {"conf_dir": manager.conf_dir, "conf_files": [], "conf_error": ""}
+        if not manager.is_nginx_installed():
+            context["conf_error"] = "Nginx is not installed on this server."
+        else:
+            try:
+                context["conf_files"] = manager.list_files()
+            except (NginxConfError, OSError) as e:
+                context["conf_error"] = str(e)
+        return render(request, self.template_name, context)
+
+    def post(self, request):
+        manager = NginxConfManager()
+        name = request.POST.get("filename", "").strip()
+        content = request.POST.get("content", "")
+        try:
+            result = manager.create(name, content)
+            messages.success(request, f"{name} created. {result}")
+        except (NginxConfError, OSError) as e:
+            messages.error(request, str(e))
+        return redirect("wafinstaller:nginx_conf")
+
+
+class NginxConfReadView(LoginRequiredMixin, View):
+    login_url = "wafinstaller:login"
+
+    def get(self, request, filename):
+        try:
+            content = NginxConfManager().read(filename)
+            return JsonResponse({"success": True, "content": content})
+        except (NginxConfError, OSError) as e:
+            return JsonResponse({"success": False, "error": str(e)})
+
+
+class NginxConfSaveView(LoginRequiredMixin, View):
+    login_url = "wafinstaller:login"
+
+    def post(self, request, filename):
+        try:
+            data = json.loads(request.body or b"{}")
+            message = NginxConfManager().save(filename, data.get("content", ""))
+            return JsonResponse({"success": True, "message": message})
+        except (NginxConfError, OSError, ValueError) as e:
+            return JsonResponse({"success": False, "error": str(e)})
