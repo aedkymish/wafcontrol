@@ -219,6 +219,25 @@ done
 sed -i -E 's/^\s*SecRuleEngine\s+DetectionOnly/SecRuleEngine On/i' "$MDIR/modsecurity.conf" || true
 grep -qE '^\s*SecRuleEngine\s+' "$MDIR/modsecurity.conf" || echo "SecRuleEngine On" >> "$MDIR/modsecurity.conf"
 
+# The audit log is written by nginx *worker* processes (not root). If they cannot create it,
+# ModSecurity silently logs nothing and WafControl only sees error.log (no request details).
+ensure_audit_log_writable() {
+  local conf="$MDIR/modsecurity.conf" audit user
+  audit="$(awk '/^[[:space:]]*SecAuditLog[[:space:]]+/ {gsub(/"/, "", $2); print $2; exit}' "$conf" 2>/dev/null)"
+  [[ -n "$audit" ]] || return 0
+  user="$(awk '/^[[:space:]]*user[[:space:]]+/ {gsub(/;/, "", $2); print $2; exit}' /etc/nginx/nginx.conf 2>/dev/null)"
+  if [[ -z "$user" ]]; then
+    for u in www-data nginx; do id "$u" >/dev/null 2>&1 && { user="$u"; break; }; done
+  fi
+  [[ -n "$user" ]] || return 0
+  mkdir -p "$(dirname "$audit")"
+  touch "$audit"
+  chown "$user":adm "$audit" 2>/dev/null || chown "$user" "$audit"
+  chmod 640 "$audit"
+  say "Audit log $audit is writable by nginx workers ($user)."
+}
+ensure_audit_log_writable
+
 MAIN="$MDIR/main.conf"
 if [[ ! -f "$MAIN" ]]; then
   { echo "# WAFCONTROL main config"; echo "Include $MDIR/modsecurity.conf"; } > "$MAIN"

@@ -3,6 +3,7 @@ import os, re, io, glob, stat, json, hashlib, time
 from ipaddress import ip_address
 from typing import Dict, List, Optional, Tuple
 
+from wafinstaller.attacks.errorlog_blocks import blocks_from_error_lines
 from wafinstaller.attacks.request_details import json_request_sections
 
 JSON_TXN_KEYS = ("transaction", "messages")
@@ -473,31 +474,7 @@ def blocks_from_errorlogs(paths: List[str], tail_n: int = 12000) -> List[str]:
     out = []
     for p in paths:
         if not p or not os.path.exists(p): continue
-        lines = tail_lines(p, tail_n)
-        group = {}
-        for ln in lines:
-            if "ModSecurity:" not in ln: continue
-            m = ERROR_H_LINE.search(ln)
-            if not m: continue
-            rid = m.group(1) or ""
-            msg = m.group(3) or ""
-            uri = m.group(5) or ""
-            uid = m.group(7) or hashlib.sha1(ln.encode()).hexdigest()[:10]
-            key = uid
-            group.setdefault(key, []).append((rid, msg, uri, uid, ln))
-        for uid, items in group.items():
-            rid = hashlib.sha1(uid.encode()).hexdigest()[:8]
-            lines_out = [f"---{rid}---H--"]
-            uri = ""
-            for r, mmsg, u, u2, raw in items:
-                uri = uri or u
-                # avoid f-string backslash in expression
-                if uri:
-                    lines_out.append('ModSecurity: Warning. [id "%s"] [msg "%s"] [uri "%s"] [unique_id "%s"]' % (r, mmsg, uri, uid))
-                else:
-                    lines_out.append('ModSecurity: Warning. [id "%s"] [msg "%s"] [unique_id "%s"]' % (r, mmsg, uid))
-            lines_out.append(f"---{rid}---Z--")
-            out.append("\n".join(lines_out))
+        out.extend(blocks_from_error_lines(tail_lines(p, tail_n)))
     return out
 
 def discover_all_paths():

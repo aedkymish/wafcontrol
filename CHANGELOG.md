@@ -21,6 +21,12 @@
   Duplicates are now detected by ModSecurity's `unique_id` + rule (new `Attack.txn_id`), so re-read log entries are
   still ignored while every new request is stored.
 
+- error.log fallback (used when no audit log is readable) stored nothing on nginx: its regex lost the unique_id, so
+  the client IP could not be found. Error lines are now grouped by unique_id with the full ModSecurity text kept, the
+  client IP is read from `[client ...]` / `client:`, and on nginx the method and Host come from `request:`/`host:`.
+- nginx installer: the audit log file is created writable by the nginx worker user; otherwise libmodsecurity writes
+  nothing and attacks have no request details.
+
 ### Security
 - Fixed stored XSS on the attacks pages: the attacker-controlled URI was placed inside a JavaScript template literal
   in the "Copy" buttons.
