@@ -170,9 +170,11 @@ CELERY_BROKER_URL = 'redis://localhost:6379/0'
 CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
-broker_connection_retry_on_startup = True
-CELERYD_TASK_TIME_LIMIT = 300
-CELERYD_TASK_SOFT_TIME_LIMIT = 250
+# A stuck task must not hold a worker slot forever (that starves the per-minute attack parser).
+# With namespace='CELERY' these are the names Celery reads (CELERYD_* were silently ignored).
+CELERY_TASK_TIME_LIMIT = 300
+CELERY_TASK_SOFT_TIME_LIMIT = 250
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 
 # Security

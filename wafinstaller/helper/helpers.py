@@ -88,6 +88,7 @@ def run_basic_script() -> Dict[str, Any]:
             stderr=subprocess.PIPE,
             text=True,
             check=False,
+            timeout=20,
         )
         data = _safe_json_loads((result.stdout or "").strip())
         # Ensure minimum shape even if script returns partial data

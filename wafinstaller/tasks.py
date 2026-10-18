@@ -1,3 +1,4 @@
+import fcntl
 import os
 import json
 import time
@@ -75,6 +76,7 @@ def update_dashboard_stats():
             stderr=subprocess.PIPE,
             text=True,
             check=False,
+            timeout=45,
         )
         try:
             data = json.loads((res.stdout or "{}").strip() or "{}")
@@ -97,33 +99,38 @@ def update_dashboard_stats():
 
 # ---------- Core updater shared by Apache/Nginx ----------
 
+def _try_lock(path: str):
+    """Non-blocking exclusive lock; returns the fd to keep, or None if another run holds it."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except OSError:
+        os.close(fd)
+        return None
+
+
+def _release_lock(fd) -> None:
+    try:
+        os.close(fd)  # closing the fd releases the flock
+    except OSError:
+        pass
+
+
 def _update_waf_attacks_core(mod, backend: str) -> str:
     if backend == "apache":
         AUDIT_CANDIDATES = ["/var/log/apache2/modsec_audit.log", "/var/log/modsec_audit.log"]
         ERROR_CANDIDATES = ["/var/log/apache2/error.log", "/var/log/apache2/wafcontrol_error.log"]
         ACCESS_CANDIDATES = ["/var/log/apache2/access.log", "/var/log/apache2/other_vhosts_access.log"]
-        LOCK_FILE = "/tmp/update_waf_attacks_apache.lock"
         STATE_DIR = "/var/lib/wafparser/apache"
     else:
         AUDIT_CANDIDATES = ["/var/log/nginx/modsec_audit.log", "/var/log/modsec_audit.log"]
         ERROR_CANDIDATES = ["/var/log/nginx/error.log"]
         ACCESS_CANDIDATES = ["/var/log/nginx/access.log"]
-        LOCK_FILE = "/tmp/update_waf_attacks_nginx.lock"
         STATE_DIR = "/var/lib/wafparser/nginx"
 
     os.makedirs(STATE_DIR, exist_ok=True)
     CKPT_FILE = os.path.join(STATE_DIR, "audit.ckpt.json")
-
-    if os.path.exists(LOCK_FILE):
-        try:
-            age = time.time() - os.path.getmtime(LOCK_FILE)
-            if age < 900:
-                return "locked"
-            else:
-                os.remove(LOCK_FILE)
-        except Exception:
-            pass
-    open(LOCK_FILE, "w").close()
 
     def load_ckpt() -> Dict:
         try:
@@ -147,20 +154,24 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
 
     created = 0
     failed = 0
-    ckpt = load_ckpt()
-    capture = RequestCaptureSettings.load()
 
-    if not _attack_schema_ready():
-        # Keep the checkpoint where it is: once `migrate` is run, these attacks are picked up.
-        logger.error("Attack tables are out of date: run 'python manage.py makemigrations wafinstaller "
-                     "&& python manage.py migrate', then restart Celery. Attacks are not being stored.")
-        try:
-            os.remove(LOCK_FILE)
-        except OSError:
-            pass
-        return "migration required"
-
+    # One parser run at a time. A kernel lock is released automatically when the process ends
+    # (even if killed), unlike a marker file that blocked runs for 15 minutes after a crash.
+    lock_fd = _try_lock(os.path.join(STATE_DIR, "update.lock"))
+    if lock_fd is None:
+        return "locked"
+    # Everything after taking the lock runs inside try/finally: an exception anywhere (e.g. the
+    # database briefly down) must release it, or this worker process would hold it until restarted.
     try:
+        ckpt = load_ckpt()
+        capture = RequestCaptureSettings.load()
+
+        if not _attack_schema_ready():
+            # Keep the checkpoint where it is: once `migrate` is run, these attacks are picked up.
+            logger.error("Attack tables are out of date: run 'python manage.py makemigrations wafinstaller "
+                         "&& python manage.py migrate', then restart Celery. Attacks are not being stored.")
+            return "migration required"
+
         blocks = []
         if AUDIT_LOG:
             blocks = mod.read_audit_blocks_serial_without_z(AUDIT_LOG, max_bytes=8000000)
@@ -289,10 +300,7 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
         return f"{backend}: created={created}" + (f" failed={failed}" if failed else "")
 
     finally:
-        try:
-            os.remove(LOCK_FILE)
-        except Exception:
-            pass
+        _release_lock(lock_fd)
 
 _SCHEMA_READY = False
 

@@ -27,6 +27,14 @@
 - nginx installer: the audit log file is created writable by the nginx worker user; otherwise libmodsecurity writes
   nothing and attacks have no request details.
 
+- Attacks only appeared after restarting the services: Celery task time limits were set as `CELERYD_TASK_*`,
+  which Celery ignores with the `CELERY` namespace, so a stuck task (e.g. `lsof` in the per-minute stats script)
+  held a worker slot forever and starved the attack parser. Now `CELERY_TASK_TIME_LIMIT`/`SOFT_TIME_LIMIT` apply,
+  per-minute beat tasks expire after 55s instead of piling up, the stats/server-detection scripts have timeouts,
+  `lsof` is replaced by `/proc/sys/fs/file-nr`, and the parser lock is a kernel `flock` (released when the process
+  ends, and on any error) instead of a `/tmp` marker file that blocked runs for 15 minutes after a crash.
+- `CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP` was also set under an ignored name.
+
 ### Security
 - Fixed stored XSS on the attacks pages: the attacker-controlled URI was placed inside a JavaScript template literal
   in the "Copy" buttons.
