@@ -48,6 +48,15 @@
   REQUEST-900 file as `REQUEST_URI` rules, so any request to `/crs/rules/save/...` or `/dashboard/crs/settings/...`
   on *any* site behind the WAF ran with ModSecurity turned off. They are now panel-only and removed from the global
   file by the script, the installers, the CRS update and the CRS version switch.
+- Apache: the panel exclusions file moved to `/etc/modsecurity/wafcontrol/panel.conf` (the script migrates the old
+  `/etc/modsecurity/wafcontrol-panel.conf`). Debian's stock `security2.conf` includes `/etc/modsecurity/*.conf` for
+  every site, which would have made the panel-only exclusions global.
+
+### Changed
+- `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` can be set in `.env` or the environment (default
+  `redis://localhost:6379/0`), so Redis can run as a separate service or container.
+- `scripts/panel_waf_exclusions.sh` reloads nginx/Apache without systemd when it is not available (containers), and
+  `WAFC_NO_RELOAD=1` only validates the config (used by installers and image builds).
 
 ### Upgrade notes
 Run once on existing servers: `sudo bash scripts/panel_waf_exclusions.sh` (fixes 403 on panel saves and removes the

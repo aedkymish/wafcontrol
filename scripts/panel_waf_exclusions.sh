@@ -13,6 +13,7 @@
 # REQUEST-900 files: being global, they disabled the WAF for those paths on every site.
 #
 # Idempotent. Usage: sudo bash scripts/panel_waf_exclusions.sh
+# WAFC_NO_RELOAD=1 validates the config but does not reload (installer / image build).
 set -euo pipefail
 export PATH="/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin:$PATH"
 
@@ -71,18 +72,25 @@ configure_nginx() {
     restore_all; [[ -f "$BACKUP_DIR/$(echo "$rules" | tr '/' '_')" ]] || rm -f "$rules"
     return 2
   fi
-  systemctl reload nginx 2>/dev/null || nginx -s reload
-  say "nginx reloaded: panel config saves are no longer blocked."
+  reload_server nginx
+  say "nginx config applied: panel config saves are no longer blocked."
 }
 
 configure_apache() {
-  local vhost="/etc/apache2/sites-available/wafcontrol.conf" rules="/etc/modsecurity/wafcontrol-panel.conf"
+  # Kept out of /etc/modsecurity/*.conf: Debian's stock security2.conf includes that glob for
+  # every site, which would turn these panel-only exclusions into global ones.
+  local vhost="/etc/apache2/sites-available/wafcontrol.conf" rules="/etc/modsecurity/wafcontrol/panel.conf"
+  local legacy="/etc/modsecurity/wafcontrol-panel.conf"
   [[ -f "$vhost" ]] || return 1
   say "Apache panel vhost: $vhost"
-  backup "$rules"; backup "$vhost"
+  backup "$rules"; backup "$vhost"; backup "$legacy"
   mkdir -p "$(dirname "$rules")"
   printf '%s\n' "$PANEL_RULES" > "$rules"
-  if ! grep -q "wafcontrol-panel.conf" "$vhost"; then
+  if grep -q "$legacy" "$vhost"; then
+    sed -i "s|$legacy|$rules|" "$vhost"
+  fi
+  rm -f "$legacy"
+  if ! grep -q "$rules" "$vhost"; then
     # Apache only allows whole-line comments.
     sed -i -E "s|^([[:space:]]*<VirtualHost[^>]*>)[[:space:]]*$|\1\n    # WAFCONTROL-PANEL: panel-only WAF exclusions\n    <IfModule security2_module>\n        Include ${rules}\n    </IfModule>|" "$vhost"
   fi
@@ -92,8 +100,19 @@ configure_apache() {
     restore_all; [[ -f "$BACKUP_DIR/$(echo "$rules" | tr '/' '_')" ]] || rm -f "$rules"
     return 2
   fi
-  systemctl reload apache2 2>/dev/null || apache2ctl -k graceful
-  say "Apache reloaded: panel config saves are no longer blocked."
+  reload_server apache2
+  say "Apache config applied: panel config saves are no longer blocked."
+}
+
+reload_server() {  # reload_server nginx|apache2
+  [[ "${WAFC_NO_RELOAD:-0}" == "1" ]] && return 0
+  if [[ -d /run/systemd/system ]] && systemctl is-active --quiet "$1" 2>/dev/null; then
+    systemctl reload "$1"
+  elif [[ "$1" == "nginx" ]]; then
+    nginx -s reload
+  else
+    apache2ctl -k graceful
+  fi
 }
 
 done_any=0
