@@ -308,14 +308,9 @@ fi
 for f in REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf; do
   [[ -f "$CRS_DIR/rules/$f" ]] || { [[ -f "$CRS_DIR/rules/${f}.example" ]] && cp "$CRS_DIR/rules/$f.example" "$CRS_DIR/rules/${f}" || true; }
 done
-EXCL="$CRS_DIR/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf"
-if ! grep -q '/crs/rules/save/' "$EXCL" 2>/dev/null; then
-  cat >> "$EXCL" <<'EOR'
-# WAF dashboard exclusions
-SecRule REQUEST_URI "@beginsWith /crs/rules/save/"        "id:1500010,phase:1,nolog,pass,ctl:ruleEngine=Off"
-SecRule REQUEST_URI "@beginsWith /dashboard/crs/settings/" "id:1500011,phase:1,nolog,pass,ctl:ruleEngine=Off"
-EOR
-fi
+# Dashboard exclusions are scoped to the panel vhost (scripts/panel_waf_exclusions.sh), never global:
+# a global REQUEST_URI exclusion turned the WAF off for those paths on every protected site.
+sed -i -E '/id:15000(10|11)\b/d; /^# (WAF dashboard exclusions|Exclude WAF dashboard endpoints)$/d' "$CRS_DIR/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf" 2>/dev/null || true
 sed -i '/Include .*crs-setup.conf/d' "$MAIN" || true
 sed -i '/Include .*rules\/\*.conf/d' "$MAIN" || true
 {
@@ -401,6 +396,9 @@ NGX
   state_append_array CREATED_FILES "$VHOST"
   say "App vhost written: $VHOST (port ${HTTP_PORT})"
 fi
+
+# Panel exclusions, scoped to the panel vhost only (config text would otherwise be blocked by CRS).
+bash "$(dirname "${BASH_SOURCE[0]}")/panel_waf_exclusions.sh" || warn "Could not apply panel WAF exclusions; run scripts/panel_waf_exclusions.sh."
 
 # 7) Test & reload
 if nginx -t; then

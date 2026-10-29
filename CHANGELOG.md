@@ -35,11 +35,23 @@
   ends, and on any error) instead of a `/tmp` marker file that blocked runs for 15 minutes after a crash.
 - `CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP` was also set under an ignored name.
 
+- Saving configuration in the panel returned 403: the panel itself is served through nginx/Apache with
+  ModSecurity + CRS, and config text (`proxy_pass http://...`, `/var/log/...`, `SecRule`, `<VirtualHost>`) is
+  flagged as SSRF / file access / command injection. New `scripts/panel_waf_exclusions.sh` (also run by the
+  installers) skips the WAF only for POSTs to the panel's editing endpoints, and only inside the panel's vhost.
+- Apache installer did not run at all (stray quote, bash syntax error).
+
 ### Security
 - Fixed stored XSS on the attacks pages: the attacker-controlled URI was placed inside a JavaScript template literal
   in the "Copy" buttons.
+- WAF bypass on protected sites: the dashboard exclusions (ids 1500010/1500011) were written into the global CRS
+  REQUEST-900 file as `REQUEST_URI` rules, so any request to `/crs/rules/save/...` or `/dashboard/crs/settings/...`
+  on *any* site behind the WAF ran with ModSecurity turned off. They are now panel-only and removed from the global
+  file by the script, the installers, the CRS update and the CRS version switch.
 
 ### Upgrade notes
+Run once on existing servers: `sudo bash scripts/panel_waf_exclusions.sh` (fixes 403 on panel saves and removes the
+global exclusions).
 New table and column: run `python manage.py makemigrations wafinstaller && python manage.py migrate`, then restart
 the panel and Celery. The request body is only available if `SecAuditLogParts` includes `C` (or `I` on ModSecurity 2).
 
