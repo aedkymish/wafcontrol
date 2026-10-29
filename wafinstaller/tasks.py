@@ -1,3 +1,4 @@
+import fcntl
 import os
 import json
 import time
@@ -14,7 +15,8 @@ from django.utils import timezone  # <-- use Django timezone
 from pathlib import Path
 
 from .attacks.attack_nginx import determine_status
-from .models import Attack, CrsVersion, DashboardStat
+from .models import Attack, AttackRequest, CrsVersion, DashboardStat
+from .attacks.request_details import RequestDetails
 from wafinstaller.helper.utils import get_country_info
 from wafinstaller.helper.crs import load_app_settings
 from wafinstaller.helper.tasks_helpers import detect_server_kind  # ensure filename matches!
@@ -74,6 +76,7 @@ def update_dashboard_stats():
             stderr=subprocess.PIPE,
             text=True,
             check=False,
+            timeout=45,
         )
         try:
             data = json.loads((res.stdout or "{}").strip() or "{}")
@@ -96,33 +99,38 @@ def update_dashboard_stats():
 
 # ---------- Core updater shared by Apache/Nginx ----------
 
+def _try_lock(path: str):
+    """Non-blocking exclusive lock; returns the fd to keep, or None if another run holds it."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except OSError:
+        os.close(fd)
+        return None
+
+
+def _release_lock(fd) -> None:
+    try:
+        os.close(fd)  # closing the fd releases the flock
+    except OSError:
+        pass
+
+
 def _update_waf_attacks_core(mod, backend: str) -> str:
     if backend == "apache":
         AUDIT_CANDIDATES = ["/var/log/apache2/modsec_audit.log", "/var/log/modsec_audit.log"]
         ERROR_CANDIDATES = ["/var/log/apache2/error.log", "/var/log/apache2/wafcontrol_error.log"]
         ACCESS_CANDIDATES = ["/var/log/apache2/access.log", "/var/log/apache2/other_vhosts_access.log"]
-        LOCK_FILE = "/tmp/update_waf_attacks_apache.lock"
         STATE_DIR = "/var/lib/wafparser/apache"
     else:
         AUDIT_CANDIDATES = ["/var/log/nginx/modsec_audit.log", "/var/log/modsec_audit.log"]
         ERROR_CANDIDATES = ["/var/log/nginx/error.log"]
         ACCESS_CANDIDATES = ["/var/log/nginx/access.log"]
-        LOCK_FILE = "/tmp/update_waf_attacks_nginx.lock"
         STATE_DIR = "/var/lib/wafparser/nginx"
 
     os.makedirs(STATE_DIR, exist_ok=True)
     CKPT_FILE = os.path.join(STATE_DIR, "audit.ckpt.json")
-
-    if os.path.exists(LOCK_FILE):
-        try:
-            age = time.time() - os.path.getmtime(LOCK_FILE)
-            if age < 900:
-                return "locked"
-            else:
-                os.remove(LOCK_FILE)
-        except Exception:
-            pass
-    open(LOCK_FILE, "w").close()
 
     def load_ckpt() -> Dict:
         try:
@@ -145,9 +153,25 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
     ACCESS_LOGS = [p for p in ACCESS_CANDIDATES if os.path.exists(p)]
 
     created = 0
-    ckpt = load_ckpt()
+    failed = 0
 
+    # One parser run at a time. A kernel lock is released automatically when the process ends
+    # (even if killed), unlike a marker file that blocked runs for 15 minutes after a crash.
+    lock_fd = _try_lock(os.path.join(STATE_DIR, "update.lock"))
+    if lock_fd is None:
+        return "locked"
+    # Everything after taking the lock runs inside try/finally: an exception anywhere (e.g. the
+    # database briefly down) must release it, or this worker process would hold it until restarted.
     try:
+        ckpt = load_ckpt()
+        capture = RequestCaptureSettings.load()
+
+        if not _attack_schema_ready():
+            # Keep the checkpoint where it is: once `migrate` is run, these attacks are picked up.
+            logger.error("Attack tables are out of date: run 'python manage.py makemigrations wafinstaller "
+                         "&& python manage.py migrate', then restart Celery. Attacks are not being stored.")
+            return "migration required"
+
         blocks = []
         if AUDIT_LOG:
             blocks = mod.read_audit_blocks_serial_without_z(AUDIT_LOG, max_bytes=8000000)
@@ -209,21 +233,26 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
                 continue
 
             host = mod.extract_host(blk) or ""
+            # One AttackRequest per transaction, created only if at least one Attack row is stored.
+            request_obj = None
+            request_failed = False
             full_uri = uri
             if ip in ip_targets:
                 cand = mod.pick_best_target(ip, uri, ip_targets[ip])
                 if cand:
                     full_uri = cand
 
+            # ModSecurity's unique_id identifies the request: the same log entry re-read later is a
+            # duplicate, but the same attack sent again (new request, new id) must be stored again.
+            txn = _no_nul(uid or uid_a or "")[:128]
+
             for rid, msg in hits:
-                sig = mod.build_sig(ip or "", f"{host}|{full_uri}" or "", rid or "", msg or "", ver or "", status)
+                sig = mod.build_sig(ip or "", f"{host}|{full_uri}|{txn}", rid or "", msg or "", ver or "", status)
                 if sig in inrun_seen:
                     continue
                 inrun_seen.add(sig)
 
-                if Attack.objects.filter(
-                        ip=ip, uri=full_uri, host=host or None, rule_id=rid, message=msg, version=ver, status=status
-                ).exists():
+                if _already_stored(txn, ip, full_uri, host, rid, msg, ver, status):
                     continue
 
                 country_info = geo_cache.get(ip)
@@ -231,35 +260,129 @@ def _update_waf_attacks_core(mod, backend: str) -> str:
                     country_info = get_country_info(ip) or {}
                     geo_cache[ip] = country_info
 
+                if request_obj is None and not request_failed:
+                    # Request details are best effort: a failure here must never drop the attack itself.
+                    try:
+                        request_obj = capture.create_request(sections, uid or uid_a)
+                    except Exception as e:
+                        request_failed = True
+                        logger.warning("%s: could not store request details (%s); storing attack without them.",
+                                       backend, e)
                 try:
                     Attack.objects.create(
+                        txn_id=txn,
+                        request=request_obj,
                         ip=ip,
                         country=country_info.get("country", "-"),
                         flag=country_info.get("iso_code", "-"),
-                        rule_id=rid or "",
-                        message=msg or "",
-                        uri=full_uri or "",
-                        referer=ref or "",
+                        rule_id=_no_nul(rid or ""),
+                        message=_no_nul(msg or ""),
+                        uri=_no_nul(full_uri or "")[:2048],
+                        referer=_no_nul(ref or "")[:2048],
                         status=status,
                         severity=severity,
                         anomaly_score=anomaly_score,
                         version=ver or "-",
-                        host=host or None,
+                        host=_no_nul(host)[:255] or None,
                     )
                     created += 1
                 except IntegrityError:
                     continue
-                except Exception:
+                except Exception as e:
+                    failed += 1
+                    if failed == 1:
+                        logger.exception("%s: failed to store attack: %s", backend, e)
                     continue
 
+        if failed:
+            logger.error("%s: %d attack(s) could not be stored (first error logged above).", backend, failed)
         save_ckpt(ckpt)
-        return f"{backend}: created={created}"
+        return f"{backend}: created={created}" + (f" failed={failed}" if failed else "")
 
     finally:
-        try:
-            os.remove(LOCK_FILE)
-        except Exception:
-            pass
+        _release_lock(lock_fd)
+
+_SCHEMA_READY = False
+
+
+def _attack_schema_ready() -> bool:
+    """True once the attack tables have the columns this code writes (checked until it succeeds)."""
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return True
+    from django.db import connection
+    try:
+        tables = connection.introspection.table_names()
+        if AttackRequest._meta.db_table not in tables:
+            return False
+        with connection.cursor() as cursor:
+            columns = {c.name for c in connection.introspection.get_table_description(cursor, Attack._meta.db_table)}
+        _SCHEMA_READY = {"request_id", "txn_id"} <= columns
+    except Exception:
+        return False
+    return _SCHEMA_READY
+
+
+LEGACY_DEDUPE_WINDOW = timedelta(hours=24)
+
+
+def _already_stored(txn, ip, uri, host, rid, msg, ver, status) -> bool:
+    """True if this rule hit of this request is already in the database."""
+    same_content = dict(ip=ip, uri=_no_nul(uri or "")[:2048], host=_no_nul(host)[:255] or None,
+                        rule_id=_no_nul(rid or ""), message=_no_nul(msg or ""), version=ver or "-", status=status)
+    if not txn:
+        # No request id (e.g. error-log fallback): only the content can identify it.
+        return Attack.objects.filter(**same_content).exists()
+    if Attack.objects.filter(txn_id=txn, rule_id=same_content["rule_id"]).exists():
+        return True
+    # Rows stored before txn_id existed: avoid re-adding them when old log entries are re-read.
+    return Attack.objects.filter(txn_id="", timestamp__gte=timezone.now() - LEGACY_DEDUPE_WINDOW,
+                                 **same_content).exists()
+
+
+def _no_nul(value):
+    """PostgreSQL rejects NUL (\\x00) in text and JSON; attack payloads often contain it."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {_no_nul(k): _no_nul(v) for k, v in value.items()}
+    return value
+
+
+class RequestCaptureSettings:
+    """Which parts of the attacking request are stored (Owc Setting page)."""
+
+    def __init__(self, store_body: bool, store_cookies: bool, max_body: int):
+        self.store_body = store_body
+        self.store_cookies = store_cookies
+        self.max_body = max_body
+
+    @classmethod
+    def load(cls) -> "RequestCaptureSettings":
+        from wafinstaller.helper.crs import APP_KEYS
+        cfg = load_app_settings()
+        get = lambda k: str(cfg.get(k, APP_KEYS[k]["default"])).strip()
+        on = lambda k: get(k).lower() in ("1", "true", "yes", "on")
+        max_body = get("AttackMaxBodyBytes")
+        return cls(on("AttackStoreRequestBody"), on("AttackStoreCookies"),
+                   int(max_body) if max_body.isdigit() else 16384)
+
+    def create_request(self, sections, unique_id: str):
+        details = RequestDetails.from_sections(sections, max_body=self.max_body,
+                                               store_body=self.store_body, store_cookies=self.store_cookies)
+        if details.is_empty:
+            return None  # e.g. error-log fallback: no request sections available
+        return AttackRequest.objects.create(
+            unique_id=_no_nul(unique_id or "")[:128],
+            method=_no_nul(details.method)[:16],
+            protocol=_no_nul(details.protocol)[:16],
+            user_agent=_no_nul(details.user_agent)[:1024],
+            headers=_no_nul(details.headers),
+            cookies=_no_nul(details.cookies),
+            body=_no_nul(details.body),
+            body_truncated=details.body_truncated,
+        )
+
 
 # ---------- Per-backend public tasks ----------
 
@@ -285,6 +408,8 @@ def delete_old_attacks():
     days = int(app_settings.get("AttackRetentionDays", 15))
     cutoff = timezone.now() - timedelta(days=days)  # uses Django timezone
     deleted_count, _ = Attack.objects.filter(timestamp__lt=cutoff).delete()
+    # Requests no longer referenced by any attack (bodies/headers can be large).
+    AttackRequest.objects.filter(attacks__isnull=True).delete()
     return f"Deleted {deleted_count} old attacks."
 
 

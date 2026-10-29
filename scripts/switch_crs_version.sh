@@ -67,14 +67,9 @@ fi
 if [[ -f "$TARGET_DIR/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf.example" && ! -f "$TARGET_DIR/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf" ]]; then
   cp "$TARGET_DIR/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf.example" "$TARGET_DIR/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf"
 fi
-if [[ -f "$TARGET_DIR/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf" ]] && \
-   ! grep -q 'id:1500010' "$TARGET_DIR/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf"; then
-  cat >> "$TARGET_DIR/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf" <<'EOR'
-# WAF dashboard exclusions
-SecRule REQUEST_URI "@beginsWith /crs/rules/save/"        "id:1500010,phase:1,nolog,pass,ctl:ruleEngine=Off"
-SecRule REQUEST_URI "@beginsWith /dashboard/crs/settings/" "id:1500011,phase:1,nolog,pass,ctl:ruleEngine=Off"
-EOR
-fi
+# Dashboard exclusions are scoped to the panel vhost (scripts/panel_waf_exclusions.sh), never global:
+# a global REQUEST_URI exclusion turned the WAF off for those paths on every protected site.
+sed -i -E '/id:15000(10|11)\b/d; /^# (WAF dashboard exclusions|Exclude WAF dashboard endpoints)$/d' "$TARGET_DIR/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf" 2>/dev/null || true
 
 # wire in (keep a backup so a failed config test can be rolled back)
 if [[ "$SERVER" == "nginx" ]]; then

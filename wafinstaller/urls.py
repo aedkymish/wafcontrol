@@ -12,7 +12,7 @@ from wafinstaller.views import (
     ServerConfListView, ServerConfReadView, ServerConfSaveView,
     UserListView, UserCreateView, UserEditView, UserDeleteView,
     SyslogConfigView, IpListListView, IpListCreateView, IpListEditView, IpListDeleteView,
-    IpListRefreshGeoView
+    IpListRefreshGeoView, AttackRequestView
 )
 
 app_name = 'wafinstaller'
@@ -35,6 +35,7 @@ urlpatterns = [
     # Attacks
     path('dashboard/attacks/', WafAttacksView.as_view(), name='waf_attacks'),
     path('dashboard/critical/', CriticalWafAttacksView.as_view(), name='critical_attacks'),
+    path('dashboard/attacks/<int:attack_id>/request/', AttackRequestView.as_view(), name='attack_request'),
     path('dashboard/top-attacker/', TopAttackersView.as_view(), name='top-attacker'),
 
     # CRS Rules – browse & edit
