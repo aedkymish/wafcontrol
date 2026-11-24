@@ -42,6 +42,10 @@
 - Apache installer did not run at all (stray quote, bash syntax error).
 
 ### Security
+- Dependencies updated to versions without known vulnerabilities (176 advisories found by pip-audit against the
+  PyPI/OSV database): Django 5.2.19 (LTS), Pillow 13.0.0, aiohttp 3.14.5, tornado 6.6.1, gunicorn 27.0.1,
+  urllib3 2.8.0, requests 2.34.2, sqlparse 0.6.1, idna 3.20, certifi 2026.11.20, fonttools 4.65.0, plus the
+  aiohttp dependencies they need. Python 3.11 or newer is now required (Pillow 13 dropped 3.10).
 - Fixed stored XSS on the attacks pages: the attacker-controlled URI was placed inside a JavaScript template literal
   in the "Copy" buttons.
 - WAF bypass on protected sites: the dashboard exclusions (ids 1500010/1500011) were written into the global CRS
